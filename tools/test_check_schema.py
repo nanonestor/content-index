@@ -69,6 +69,16 @@ version = "0.7.0"
 MOD = MOD_KEYS + MOD_TABLES
 PACK = PACK_KEYS + PACK_TABLES
 
+VEHICLE = """\
+spec_version = 1
+id = "TestRover"
+type = "vehicle"
+name = "Test Rover"
+authors = ["Nobody"]
+abstract = "A vehicle that exists only in this test file."
+license = "CC-BY-4.0"
+"""
+
 PACK_MEMBER = '[[mods]]\nid = "AdvancedFlightComputer"\nversion = "0.7.0"\n'
 
 LOADER = ('type = "mod"', 'type = "mod-loader"')
@@ -122,12 +132,12 @@ REJECTED = [
     # The shared authored core
     ("unknown top-level key", mod(keys='abstrct = "typo"\n'), "the document: Additional properties are not allowed ('abstrct'"),
     ("unknown spec version", mod(replace=("spec_version = 1", "spec_version = 2")), "spec_version: 1 was expected"),
-    ("unknown content type", mod(replace=('type = "mod"', 'type = "vehicle"')), "type: 'vehicle' is not one of"),
+    ("unknown content type", mod(replace=('type = "mod"', 'type = "addon"')), "type: 'addon' is not one of"),
     ("empty name", mod(replace=('name = "Test Mod"', 'name = ""')), "name: '' should be non-empty"),
     ("empty abstract", mod(replace=('abstract = "A mod that exists only in this test file."', 'abstract = ""')), "abstract: '' should be non-empty"),
     ("no authors", mod(replace=('authors = ["Nobody"]', "authors = []")), "authors: [] should be non-empty"),
     ("unknown status", mod(keys='status = "abandoned"\n'), "status: 'abandoned' is not one of"),
-    ("uppercase tag", mod(keys='tags = ["Parts"]\n'), "tags[0]: 'Parts' does not match"),
+    ("uppercase tag", mod(keys='tags = ["Parts"]\n'), "tags[0]: 'Parts' is not lowercase letters and digits, with single - between words, such as parts or life-support"),
     ("successor without a deprecation", mod(keys='superseded_by = "TestModNG"\n'), "the document: 'status' is a required property"),
     (
         "a listing superseding itself",
@@ -143,10 +153,10 @@ REJECTED = [
     ("reserved id NUL", mod(replace=('id = "TestMod"', 'id = "NUL"')), "id: 'NUL' is a reserved name"),
     ("reserved id LPT9", mod(replace=('id = "TestMod"', 'id = "lpt9"')), "id: 'lpt9' is a reserved name"),
     ("reserved id with an extension", mod(replace=('id = "TestMod"', 'id = "com1.tools"')), "id: 'com1.tools' is a reserved name"),
-    ("id with a trailing dot", mod(replace=('id = "TestMod"', 'id = "TestMod."')), "id: 'TestMod.' does not match"),
-    ("id with a leading dot", mod(replace=('id = "TestMod"', 'id = ".TestMod"')), "id: '.TestMod' does not match"),
-    ("id with a space", mod(replace=('id = "TestMod"', 'id = "Test Mod"')), "id: 'Test Mod' does not match"),
-    ("id with a trailing newline", mod(replace=('id = "TestMod"', 'id = "TestMod\\n"')), "id: 'TestMod\\n' does not match"),
+    ("id with a trailing dot", mod(replace=('id = "TestMod"', 'id = "TestMod."')), "id: 'TestMod.' is not 1 to 64 ASCII letters, digits, '.', '_' or '-', starting and ending with a letter or digit"),
+    ("id with a leading dot", mod(replace=('id = "TestMod"', 'id = ".TestMod"')), "id: '.TestMod' is not 1 to 64 ASCII letters, digits, '.', '_' or '-', starting and ending with a letter or digit"),
+    ("id with a space", mod(replace=('id = "TestMod"', 'id = "Test Mod"')), "id: 'Test Mod' is not 1 to 64 ASCII letters, digits, '.', '_' or '-', starting and ending with a letter or digit"),
+    ("id with a trailing newline", mod(replace=('id = "TestMod"', 'id = "TestMod\\n"')), "id: 'TestMod\\n' is not 1 to 64 ASCII letters, digits, '.', '_' or '-', starting and ending with a letter or digit"),
     ("id longer than the path budget", mod(replace=('id = "TestMod"', f'id = "{"M" * 65}"')), "id: 'MMM"),
 
     # Links
@@ -157,7 +167,7 @@ REJECTED = [
     ("forums link to a category", mod(replace=(FORUMS, 'forums = "https://forums.ahwoo.com/forums/kitten-space-agency/mod-releases/"')), "links.forums: 'https://forums.ahwoo.com/forums/kitten-space-agency/mod-releases/' is not an https link to a thread on forums.ahwoo.com"),
     ("forums link to a member profile", mod(replace=(FORUMS, 'forums = "https://forums.ahwoo.com/members/nobody.42/"')), "links.forums: 'https://forums.ahwoo.com/members/nobody.42/' is not an https link to a thread on forums.ahwoo.com"),
     ("forums link with a control character in it", mod(replace=(FORUMS, 'forums = "https://forums.ahwoo.com/threads/my\\u001bmod.783/"')), "links.forums: 'https://forums.ahwoo.com/threads/my\\x1bmod.783/' is not an https link to a thread on forums.ahwoo.com"),
-    ("a link that is not a URL", mod(replace=(FORUMS, FORUMS + '\nrepository = "github.com/a/b"')), "links.repository: 'github.com/a/b' does not match"),
+    ("a link that is not a URL", mod(replace=(FORUMS, FORUMS + '\nrepository = "github.com/a/b"')), "links.repository: 'github.com/a/b' is not an http or https URL, such as https://github.com/me/MyMod"),
     (
         "link key differing only in case",
         mod(replace=(FORUMS, FORUMS + '\nForums = "https://forums.ahwoo.com/threads/test-mod.2/"')),
@@ -167,9 +177,9 @@ REJECTED = [
     # Compatibility
     ("missing game_min", mod(replace=(GAME_MIN, 'game_max = "2026.8.5.5168"')), "compatibility: 'game_min' is a required property"),
     ("unknown compatibility key", mod(replace=(GAME_MIN, GAME_MIN + '\ngame_exact = "2026.8.3.5117"')), "compatibility: Additional properties are not allowed ('game_exact'"),
-    ("game bound with a build suffix", mod(replace=("5117", "5117-LOCAL")), "compatibility.game_min: '2026.8.3.5117-LOCAL' does not match"),
-    ("game bound as a year.month.build prefix", mod(replace=("2026.8.3.5117", "2026.8.3")), "compatibility.game_min: '2026.8.3' does not match"),
-    ("game bound with a month above twelve", mod(replace=("2026.8.3.5117", "2026.13")), "compatibility.game_min: '2026.13' does not match"),
+    ("game bound with a build suffix", mod(replace=("5117", "5117-LOCAL")), "compatibility.game_min: '2026.8.3.5117-LOCAL' is not a game version as the game shows it, such as 2026.10.10.5554, or a month such as 2026.10"),
+    ("game bound as a year.month.build prefix", mod(replace=("2026.8.3.5117", "2026.8.3")), "compatibility.game_min: '2026.8.3' is not a game version as the game shows it, such as 2026.10.10.5554, or a month such as 2026.10"),
+    ("game bound with a month above twelve", mod(replace=("2026.8.3.5117", "2026.13")), "compatibility.game_min: '2026.13' is not a game version as the game shows it, such as 2026.10.10.5554, or a month such as 2026.10"),
     ("game_max older than game_min", mod(replace=(GAME_MIN, GAME_MIN + '\ngame_max = "2026.7.5.4892"')), "is older than game_min"),
     ("game_max in a month before game_min", mod(replace=(GAME_MIN, 'game_min = "2026.9"\ngame_max = "2026.7"')), "is older than game_min"),
     ("unknown platform", mod(replace=(GAME_MIN, GAME_MIN + '\nos = ["haiku"]')), "compatibility.os[0]: 'haiku' is not one of"),
@@ -179,10 +189,29 @@ REJECTED = [
     ("releases naming two hosts without an authority", mod(append='\n[releases]\ngithub = "a/b"\nspacedock = 4253\n'), "releases: 'authority' is a required property"),
     ("authority naming a host that is not there", mod(append='\n[releases]\ngithub = "a/b"\nauthority = "spacedock"\n'), "releases: 'spacedock' is a required property"),
     ("releases with no host at all", mod(append='\n[releases]\nauthority = "github"\n'), "releases: {'authority': 'github'} is not valid under any"),
-    ("unknown release host", mod(append='\n[releases]\ncurseforge = 12\n'), "releases: Additional properties are not allowed ('curseforge'"),
-    ("unknown authority", mod(append='\n[releases]\ngithub = "a/b"\nauthority = "forums"\n'), "releases.authority: 'forums' is not one of"),
+    ("unknown release host", mod(append='\n[releases]\nCurseForge = 12\n'), "releases: Additional properties are not allowed ('CurseForge'"),
+    ("a share host key with capital letters", mod(append='\n[releases]\nKSAMods = "TestMod"\n'), "releases: Additional properties are not allowed ('KSAMods'"),
+    ("a share host key with a number as its value", mod(append='\n[releases]\nksamods = 12\n'), "releases.ksamods: 12 is not of type 'string'"),
+    ("a misspelt spacedock", mod(append='\n[releases]\nspacdock = 4253\n'), "releases.spacdock: 4253 is not of type 'string'; 'spacdock' is not github or spacedock, so the index reads it as a share host"),
+    ("a misspelt github", mod(append='\n[releases]\ngihub = "a/b"\n'), "releases.gihub: 'a/b' is not 1 to 64 ASCII letters, digits, '.', '_' or '-', starting and ending with a letter or digit; 'gihub' is not github or spacedock"),
+    ("a share host key whose value is not an id", mod(append='\n[releases]\nksamods = "Test Mod"\n'), "releases.ksamods: 'Test Mod' is not 1 to 64 ASCII letters"),
+    ("unknown authority", mod(append='\n[releases]\ngithub = "a/b"\nauthority = "Forums"\n'), "releases.authority: 'Forums' is not a host key"),
+    ("a section with a share host authority and no host", mod(append='\n[releases]\nauthority = "ksamods"\n'), "releases: {'authority': 'ksamods'} is not valid under any"),
     ("spacedock id as a string", mod(append='\n[releases]\nspacedock = "4253"\n'), "releases.spacedock: '4253' is not of type 'integer'"),
     ("spacedock id of zero", mod(append="\n[releases]\nspacedock = 0\n"), "releases.spacedock: 0 is less than the minimum"),
+    ("since that is not a version", mod(append='\n[releases]\ngithub = "a/b"\nsince = "latest"\n'), "releases.since: 'latest' is not a version such as 1.2.3, 0.5 or 2.0.0-rc.1"),
+    ("since with a leading v", mod(append='\n[releases]\ngithub = "a/b"\nsince = "v1.2"\n'), "releases.since: 'v1.2' is not a version"),
+    ("since with four numbers", mod(append='\n[releases]\ngithub = "a/b"\nsince = "1.2.3.4"\n'), "releases.since: '1.2.3.4' is not a version"),
+    ("since written as a number", mod(append='\n[releases]\ngithub = "a/b"\nsince = 1.2\n'), "releases.since: 1.2 is not of type 'string'"),
+    ("since with no host", mod(append='\n[releases]\nsince = "1.2"\n'), "releases: {'since': '1.2'} is not valid under any"),
+    ("since as the authority", mod(append='\n[releases]\ngithub = "a/b"\nsince = "1.2"\nauthority = "since"\n'), "releases.authority: 'since' is not a host key"),
+    ("an empty tag_prefix", mod(append='\n[releases]\ngithub = "a/b"\ntag_prefix = ""\n'), "releases.tag_prefix: '' is not a non-empty ASCII string without whitespace"),
+    ("a tag_prefix with a space", mod(append='\n[releases]\ngithub = "a/b"\ntag_prefix = "gatos v"\n'), "releases.tag_prefix: 'gatos v' is not a non-empty ASCII string"),
+    ("a tag_prefix with a trailing newline", mod(append='\n[releases]\ngithub = "a/b"\ntag_prefix = "gatos-\\n"\n'), "releases.tag_prefix: 'gatos-\\n' is not a non-empty ASCII string"),
+    ("a tag_prefix that is not ASCII", mod(append='\n[releases]\ngithub = "a/b"\ntag_prefix = "gatos-\\u00e4"\n'), "is not a non-empty ASCII string"),
+    ("a tag_prefix written as a number", mod(append='\n[releases]\ngithub = "a/b"\ntag_prefix = 5\n'), "releases.tag_prefix: 5 is not of type 'string'"),
+    ("a tag_prefix next to spacedock only", mod(append='\n[releases]\nspacedock = 4253\ntag_prefix = "gatos-v"\n'), "releases: 'github' is a dependency of 'tag_prefix'"),
+    ("a tag_prefix with no host", mod(append='\n[releases]\ntag_prefix = "gatos-v"\n'), "releases: 'github' is a dependency of 'tag_prefix'"),
     (
         "github host that is not owner/repo",
         mod(append='\n[releases]\ngithub = "repository"\n'),
@@ -191,8 +220,11 @@ REJECTED = [
 
     # Loader
     ("loader max below min", mod(append='\n[loader]\nid = "StarMap"\nmin = "0.4.6"\nmax = "0.4.5"\n'), "loader: max '0.4.5' is below min '0.4.6'"),
-    ("loader version with a leading v", mod(append='\n[loader]\nid = "StarMap"\nmin = "v0.4.5"\n'), "loader.min: 'v0.4.5' does not match"),
-    ("a bound pair that does not parse at all", mod(append='\n[loader]\nid = "StarMap"\nmin = "v0.4.6"\nmax = "0.4"\n'), "loader.min: 'v0.4.6' does not match"),
+    ("loader version with a leading v", mod(append='\n[loader]\nid = "StarMap"\nmin = "v0.4.5"\n'), "loader.min: 'v0.4.5' is not a version such as 1.2.3, 0.5 or 2.0.0-rc.1"),
+    ("a bound pair that does not parse at all", mod(append='\n[loader]\nid = "StarMap"\nmin = "v0.4.6"\nmax = "0.4.6.1"\n'), "loader.min: 'v0.4.6' is not a version"),
+    ("loader bound with four numbers", mod(append='\n[loader]\nid = "StarMap"\nmin = "0.4.5.1"\n'), "loader.min: '0.4.5.1' is not a version"),
+    ("loader bound with a leading zero", mod(append='\n[loader]\nid = "StarMap"\nmin = "01.2"\n'), "loader.min: '01.2' is not a version"),
+    ("a short loader max below its min", mod(append='\n[loader]\nid = "StarMap"\nmin = "0.5.1"\nmax = "0.5"\n'), "loader: max '0.5' is below min '0.5.1'"),
     ("loader without a min bound", mod(append='\n[loader]\nid = "StarMap"\n'), "loader: 'min' is a required property"),
     ("unknown loader key", mod(append='\n[loader]\nid = "StarMap"\nmin = "0.4.5"\nexact = "0.4.5"\n'), "loader: Additional properties are not allowed ('exact'"),
     ("a listing as its own loader", mod(append='\n[loader]\nid = "TestMod"\nmin = "1.0.0"\n'), "loader: a listing cannot be its own loader"),
@@ -207,6 +239,9 @@ REJECTED = [
     ("dependency without a kind", mod(append='\n[[dependencies]]\nid = "A"\n'), "dependencies[0]: 'kind' is a required property"),
     ("any_of with a kind that offers no choice", mod(append='\n[[dependencies]]\nkind = "conflict"\nany_of = [{ id = "A" }, { id = "B" }]\n'), "dependencies[0].kind: 'conflict' is not one of"),
     ("any_of carrying entry-level bounds", mod(append='\n[[dependencies]]\nkind = "required"\nmin = "1.0.0"\nany_of = [{ id = "A" }]\n'), "dependencies[0].min: this key is not allowed here"),
+    ("dependency bound with four numbers", mod(append='\n[[dependencies]]\nid = "A"\nkind = "required"\nmax = "1.0.0.0"\n'), "dependencies[0].max: '1.0.0.0' is not a version"),
+    ("any_of alternative bound with a leading zero", mod(append='\n[[dependencies]]\nkind = "required"\nany_of = [{ id = "A", min = "1.02" }]\n'), "dependencies[0].any_of[0].min: '1.02' is not a version"),
+    ("a short dependency max below its min", mod(append='\n[[dependencies]]\nid = "A"\nkind = "required"\nmin = "2"\nmax = "1.9"\n'), "dependencies[0]: max '1.9' is below min '2'"),
     ("an empty any_of", mod(append='\n[[dependencies]]\nkind = "required"\nany_of = []\n'), "dependencies[0].any_of: [] should be non-empty"),
     ("an any_of alternative without an id", mod(append='\n[[dependencies]]\nkind = "required"\nany_of = [{ min = "1.0.0" }]\n'), "dependencies[0].any_of[0]: 'id' is a required property"),
     ("an unknown key in an any_of alternative", mod(append='\n[[dependencies]]\nkind = "required"\nany_of = [{ id = "A", kind = "required" }]\n'), "dependencies[0].any_of[0]: Additional properties are not allowed ('kind'"),
@@ -226,8 +261,9 @@ REJECTED = [
     ("install root through a device name", mod(append='\n[install]\nroot = "build/NUL/x"\n'), "install.root: 'build/NUL/x' is a path through a reserved Windows device name"),
     ("a step that is not prose", mod(append="\n[install]\nsteps = [3]\n"), "install.steps[0]: 3 is not of type 'string'"),
     ("an install section that is not a table", mod(keys='install = "later"\n'), "install: 'later' is not of type 'object'"),
-    ("a mod choosing where it installs", mod(append='\n[install]\ntarget = "game-root"\n'), "install.target: 'mods' was expected"),
-    ("a mod nesting itself below the anchor", mod(append='\n[install]\ntarget = "mods"\npath = "extras"\n'), "install.path: this key is not allowed here"),
+    ("a mod choosing where it installs", mod(append='\n[install]\ntarget = "game-root"\n'), "install.target: this key is not allowed here"),
+    ("a mod naming the mods folder as its target", mod(append='\n[install]\ntarget = "mods"\n'), "install.target: this key is not allowed here"),
+    ("a mod nesting itself below the anchor", mod(append='\n[install]\npath = "extras"\n'), "install.path: this key is not allowed here"),
     ("unknown anchor", loader(append='\n[install]\ntarget = "somewhere"\n'), "install.target: 'somewhere' is not one of"),
     ("a loader install without a target", loader(append='\n[install]\nroot = "StarMap"\n'), "install: 'target' is a required property"),
     ("standalone without a launch target", loader(append='\n[install]\ntarget = "standalone"\n'), "the document: 'provides' is a required property"),
@@ -245,7 +281,7 @@ REJECTED = [
     ("configure without a format", loader(append=STANDALONE + '\n[provides.configure]\nfile = "c.json"\n'), "provides.configure: 'format' is a required property"),
     ("configure without a file", loader(append=STANDALONE + '\n[provides.configure]\nformat = "json"\n'), "provides.configure: 'file' is a required property"),
     ("an unwritable configure format", loader(append=STANDALONE + '\n[provides.configure]\nfile = "c.ini"\nformat = "ini"\n'), "provides.configure.format: 'ini' is not one of"),
-    ("a configure key that cannot be addressed", loader(append=STANDALONE + '\n[provides.configure]\nfile = "c.json"\nformat = "json"\ngame-path = ""\n'), "provides.configure.game-path: '' does not match"),
+    ("a configure key that cannot be addressed", loader(append=STANDALONE + '\n[provides.configure]\nfile = "c.json"\nformat = "json"\ngame-path = ""\n'), "provides.configure.game-path: '' is not key names joined by single dots, such as paths.game"),
     ("an instance table naming neither key", loader(append=INSTANCE), "provides.instance: {} should be non-empty"),
     ("an instance flag with whitespace", loader(append=INSTANCE + 'flag = "-Instance Path"\n'), "provides.instance.flag: '-Instance Path' is not a single token without whitespace or control characters"),
     ("an instance flag with a control character", loader(append=INSTANCE + 'flag = "-Instance\\u0001Path"\n'), "provides.instance.flag: '-Instance\\x01Path' is not a single token without whitespace or control characters"),
@@ -318,19 +354,59 @@ REJECTED = [
     ("a pack with no members", pack(replace=(PACK_MEMBER, "")), "'mods' is a required property"),
     ("a pack with an empty member list", pack(replace=(PACK_MEMBER, ""), keys="mods = []\n"), "mods: [] should be non-empty"),
     ("a pack member without a pinned version", pack(replace=('version = "0.7.0"', 'min = "0.7.0"')), "mods[0]: Additional properties are not allowed ('min'"),
-    ("a pack member pinned to a range", pack(replace=('version = "0.7.0"', 'version = "0.7"')), "mods[0].version: '0.7' does not match"),
+    ("a pack member pinned to a range", pack(replace=('version = "0.7.0"', 'version = "0.7"')), "mods[0].version: '0.7' is not a version with all three numbers, such as 1.2.0 or 2.0.0-rc.1, and no leading v"),
+    ("a pack version with two numbers", pack(replace=('version = "1.0.0"', 'version = "1.0"')), "version: '1.0' is not a version with all three numbers, such as 1.2.0 or 2.0.0-rc.1, and no leading v"),
     ("an unknown key on a pack member", pack(replace=('version = "0.7.0"', 'version = "0.7.0"\nkind = "required"')), "mods[0]: Additional properties are not allowed ('kind'"),
     ("a pack pinning the same mod twice", pack(append='\n[[mods]]\nid = "advancedflightcomputer"\nversion = "0.8.0"\n'), "mods[1]: 'advancedflightcomputer' is pinned by mods[0]"),
     ("a pack pinning one id in two sections", pack(append='\n[[vehicles]]\nid = "AdvancedFlightComputer"\nversion = "0.8.0"\n'), "vehicles[0]: 'AdvancedFlightComputer' is pinned by mods[0]"),
     ("a pack pinning itself", pack(append='\n[[mods]]\nid = "TestPack"\nversion = "1.0.0"\n'), "mods[1]: a pack cannot pin itself"),
     ("a pack without a released_at", pack(replace=('released_at = "2026-08-05T12:00:00Z"\n', "")), "'released_at' is a required property"),
-    ("a pack timestamp without a zone", pack(replace=("T12:00:00Z", "T12:00:00")), "released_at: '2026-08-05T12:00:00' does not match"),
+    ("a pack timestamp without a zone", pack(replace=("T12:00:00Z", "T12:00:00")), "released_at: '2026-08-05T12:00:00' is not a UTC date and time such as 2026-08-05T12:00:00Z"),
     ("a pack timestamp on no calendar", pack(replace=("2026-08-05T12:00:00Z", "2026-13-45T12:00:00Z")), "released_at: '2026-13-45T12:00:00Z' is not a real date"),
+
+    # Vehicles and saves (RFC 0085), refused by their own rules
+    ("a document without a type still needs links", MOD_KEYS.replace('type = "mod"\n', ""), "the document: 'links' is a required property"),
+    ("a document without a type still needs compatibility", MOD_KEYS.replace('type = "mod"\n', ""), "the document: 'compatibility' is a required property"),
+    ("a mod without links", MOD_KEYS + "\n[compatibility]\n" + GAME_MIN + "\n", "the document: 'links' is a required property"),
+    ("a mod without compatibility", MOD_KEYS + "\n[links]\n" + FORUMS + "\n", "the document: 'compatibility' is a required property"),
+    ("a mod without game_min", mod(replace=(GAME_MIN, 'game_max = "2026.9"')), "compatibility: 'game_min' is a required property"),
+    ("a pack without links", PACK_KEYS + PACK_MEMBER + "\n[compatibility]\n" + GAME_MIN + "\n", "the document: 'links' is a required property"),
+    ("a vehicle with a loader", VEHICLE + '\n[loader]\nid = "StarMap"\nmin = "0.4"\n', "loader: this key is not allowed here"),
+    ("a vehicle that provides something", VEHICLE + '\n[provides]\nlaunch = "x.exe"\n', "provides: this key is not allowed here"),
+    ("a vehicle with a version", VEHICLE + 'version = "1.0.0"\n', "version: this key is not allowed here"),
+    ("a vehicle with a release timestamp", VEHICLE + 'released_at = "2026-08-05T12:00:00Z"\n', "released_at: this key is not allowed here"),
+    ("a vehicle with a changelog", VEHICLE + 'changelog = "x"\n', "changelog: this key is not allowed here"),
+    ("a vehicle pinning mods", VEHICLE + PACK_MEMBER, "mods: this key is not allowed here"),
+    ("a vehicle pinning vehicles", VEHICLE + '\n[[vehicles]]\nid = "A"\nversion = "1.0.0"\n', "vehicles: this key is not allowed here"),
+    ("a vehicle pinning saves", VEHICLE + '\n[[saves]]\nid = "A"\nversion = "1.0.0"\n', "saves: this key is not allowed here"),
+    ("a vehicle with an install target", VEHICLE + '\n[install]\ntarget = "user-data"\n', "install.target: this key is not allowed here"),
+    ("a vehicle with an install path", VEHICLE + '\n[install]\npath = "Vehicles"\n', "install.path: this key is not allowed here"),
+    ("a vehicle with install manages", VEHICLE + '\n[install]\nmanages = ["vehicle.xml"]\n', "install.manages: this key is not allowed here"),
+    ("a vehicle with an install folder", VEHICLE + '\n[install]\nfolder = "Test Rover"\n', "install: Additional properties are not allowed ('folder' was unexpected)"),
+    ("a save with a loader", VEHICLE.replace('type = "vehicle"', 'type = "save"') + '\n[loader]\nid = "StarMap"\nmin = "0.4"\n', "loader: this key is not allowed here"),
+]
+
+# Vehicles and saves that their own rules accept.
+VEHICLES_AND_SAVES = [
+    ("a minimal vehicle", VEHICLE),
+    ("a minimal save", VEHICLE.replace('type = "vehicle"', 'type = "save"')),
+    ("a vehicle with a forums link and a dependency", VEHICLE + "\n[links]\n" + FORUMS + '\n\n[[dependencies]]\nid = "TestMod"\nkind = "required"\nmin = "1.4"\n'),
+    ("a vehicle with links but no forums thread", VEHICLE + '\n[links]\nrepository = "https://github.com/a/b"\n'),
+    ("a vehicle with only game_max", VEHICLE + '\n[compatibility]\ngame_max = "2026.7.5.4892"\n'),
+    ("a vehicle with the install keys it may have", VEHICLE + '\n[install]\nroot = "Test Rover"\nsteps = ["Open the vehicle in the editor."]\nuninstall = []\n'),
+    ("a vehicle on a share host", VEHICLE + '\n[releases]\nksamods = "TestRover"\n'),
+    ("a vehicle on a share host with a GitHub mirror", VEHICLE + '\n[releases]\nksamods = "TestRover"\ngithub = "a/b"\nauthority = "ksamods"\nsince = "1.0"\n'),
+    ("a vehicle with a host, tags, an icon and every dependency kind", VEHICLE + 'tags = ["rover"]\nstatus = "deprecated"\nsuperseded_by = "TestRover2"\n\n[releases]\ngithub = "a/b"\ntag_prefix = "TestRover-v"\n\n[[dependencies]]\nkind = "recommends"\nany_of = [{ id = "A" }, { id = "B" }]\n' + ICON),
 ]
 
 # Small positive variations that would be wasteful as their own file.
 ACCEPTED = [
     ("a mod with no releases section", MOD),
+    ("since in its short form", mod(append='\n[releases]\ngithub = "a/b"\nsince = "1.2"\n')),
+    ("since as a pre-release", mod(append='\n[releases]\ngithub = "a/b"\nsince = "0.5.0-rc.1"\n')),
+    ("since next to two hosts and an authority", mod(append='\n[releases]\ngithub = "a/b"\nspacedock = 4253\nauthority = "spacedock"\nsince = "1"\n')),
+    ("a tag_prefix next to github", mod(append='\n[releases]\ngithub = "a/b"\ntag_prefix = "gatos-v"\nsince = "1.1"\n')),
+    ("a tag_prefix for a github mirror", mod(append='\n[releases]\ngithub = "a/b"\nspacedock = 4253\nauthority = "spacedock"\ntag_prefix = "gatos-"\n')),
     ("a deprecated mod with a successor", mod(keys='status = "deprecated"\nsuperseded_by = "TestModNG"\n')),
     ("a month as the lower bound", mod(replace=(GAME_MIN, 'game_min = "2026.7"'))),
     ("two month bounds in order", mod(replace=(GAME_MIN, 'game_min = "2026.7"\ngame_max = "2026.8"'))),
@@ -346,6 +422,11 @@ ACCEPTED = [
     ("a pre-release ordered below its release", mod(append='\n[loader]\nid = "StarMap"\nmin = "0.5.0-rc.1"\nmax = "0.5.0"\n')),
     ("a numeric pre-release below an alphanumeric one", mod(append='\n[loader]\nid = "StarMap"\nmin = "1.0.0-1"\nmax = "1.0.0-alpha"\n')),
     ("build metadata on a bound", mod(append='\n[loader]\nid = "StarMap"\nmin = "0.4.5+build.7"\nmax = "0.4.5"\n')),
+    ("short loader and dependency bounds", mod(append='\n[loader]\nid = "StarMap"\nmin = "0.4"\n\n[[dependencies]]\nid = "A"\nkind = "required"\nmin = "1"\n')),
+    ("a short bound equal to its full form", mod(append='\n[loader]\nid = "StarMap"\nmin = "0.5"\nmax = "0.5.0"\n')),
+    ("a short pre-release bound below its release", mod(append='\n[loader]\nid = "StarMap"\nmin = "1.2-rc.1"\nmax = "1.2"\n')),
+    ("build metadata on a short bound", mod(append='\n[loader]\nid = "StarMap"\nmin = "1.2+build.7"\nmax = "1.2.0"\n')),
+    ("short bounds on an any_of alternative", mod(append='\n[[dependencies]]\nkind = "recommends"\nany_of = [{ id = "A", min = "1", max = "1.4" }]\n')),
     ("a compound license expression", mod(replace=('license = "MIT"', 'license = "(MIT OR Apache-2.0) AND CC0-1.0"'))),
     ("several licenses joined with AND", mod(replace=('license = "MIT"', 'license = "GPL-2.0-only AND CC-BY-SA-4.0"'))),
     ("a license exception", mod(replace=('license = "MIT"', 'license = "GPL-2.0-or-later WITH Bison-exception-2.2"'))),
@@ -382,10 +463,55 @@ def failures_for(text, checker):
     return errors
 
 
+def untitled_patterns(node, where="#"):
+    """The places of every pattern that says its rule neither in a title nor by an example.
+
+    The report shows the title of a refused pattern, or its first example, so a
+    pattern with neither would put the bare regex in front of the author.
+    """
+    found = []
+    if isinstance(node, dict):
+        if "pattern" in node and "title" not in node and "examples" not in node:
+            found.append(where)
+        for key, value in node.items():
+            found.extend(untitled_patterns(value, f"{where}/{key}"))
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            found.extend(untitled_patterns(value, f"{where}/{index}"))
+    return found
+
+
+def untyped_nots(node, where="#"):
+    """The places of every "not" with a pattern that does not also name the string type.
+
+    A pattern holds for every value that is not a string, so such a "not"
+    refuses a number with its title, such as 1234 is a reserved name.
+    """
+    found = []
+    if isinstance(node, dict):
+        rule = node.get("not")
+        if isinstance(rule, dict) and "pattern" in rule and rule.get("type") != "string":
+            found.append(f"{where}/not")
+        for key, value in node.items():
+            found.extend(untyped_nots(value, f"{where}/{key}"))
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            found.extend(untyped_nots(value, f"{where}/{index}"))
+    return found
+
+
 def main():
     checker = check_schema.validator()
     failures = []
     checked = 0
+
+    checked += 1
+    for where in untitled_patterns(checker.schema):
+        failures.append(f"the pattern at {where} has no title and no example")
+
+    checked += 1
+    for where in untyped_nots(checker.schema):
+        failures.append(f"the not at {where} has a pattern but does not name the string type")
 
     for path in sorted(VALID.glob("*.toml")):
         checked += 1
@@ -393,7 +519,7 @@ def main():
         if errors:
             failures.append(f"{path.name} should be valid, but: " + "; ".join(errors))
 
-    for name, text in ACCEPTED:
+    for name, text in ACCEPTED + VEHICLES_AND_SAVES:
         checked += 1
         errors = failures_for(text, checker)
         if errors:

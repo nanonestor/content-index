@@ -6,14 +6,18 @@ Each case builds a small index in a temporary folder, so the rules stay tested
 once this repository holds real listings.
 """
 
+import json
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 import check_index
+import check_schema
 
 LISTING = """\
 spec_version = 1
@@ -49,6 +53,16 @@ game_min = "2026.8.3.5117"
 forums = "https://forums.ahwoo.com/threads/x.1/"
 {extra}"""
 
+VEHICLE = """\
+spec_version = 1
+id = "{id}"
+type = "{type}"
+name = "{id}"
+authors = ["Nobody"]
+abstract = "A vehicle or a save that exists only in this test."
+license = "CC-BY-4.0"
+{extra}"""
+
 THREAD = "https://forums.ahwoo.com/threads/x.1/"
 
 
@@ -79,6 +93,14 @@ class IndexCase(unittest.TestCase):
         path.write_text(
             PACK.format(id=identifier, version=version, extra=extra), encoding="utf-8"
         )
+        return path
+
+    def vehicle(self, identifier, kind="vehicle", extra=""):
+        """A vehicle in vehicles/, or with kind "save" a save in saves/ (RFC 0085)."""
+        folder = self.root / f"{kind}s"
+        folder.mkdir(exist_ok=True)
+        path = folder / f"{identifier}.toml"
+        path.write_text(VEHICLE.format(id=identifier, type=kind, extra=extra), encoding="utf-8")
         return path
 
     def load(self):
@@ -157,6 +179,25 @@ class Collisions(IndexCase):
         entries, _ = self.load()
         self.assertEqual(entries[0].identifier, "OnDisk")
 
+    def test_a_vehicle_and_a_mod_sharing_an_id_collide(self):
+        self.vehicle("ExampleRover")
+        self.listing("examplerover")
+        self.assertEqual(
+            self.errors(),
+            [
+                "vehicles/ExampleRover.toml: the id 'ExampleRover' is already held by "
+                "listings/examplerover.toml, and ids compare case-insensitively"
+            ],
+        )
+
+    def test_a_vehicle_collides_with_a_save_and_a_pack(self):
+        self.vehicle("Shared")
+        self.vehicle("shared", "save")
+        self.pack("SHARED")
+        errors = self.errors()
+        self.assertEqual(len(errors), 2)
+        self.assertTrue(all("already held by vehicles/Shared.toml" in error for error in errors), errors)
+
 
 class References(IndexCase):
     def test_a_successor_reference_with_canonical_case_is_fine(self):
@@ -222,6 +263,31 @@ class References(IndexCase):
         self.assertEqual(len(errors), 1)
         self.assertIn("listed as a modpack", errors[0])
 
+    def test_a_vehicle_depends_on_mods_only(self):
+        self.listing("Parts")
+        self.vehicle("OtherRover")
+        self.vehicle("Rover", extra='\n[[dependencies]]\nid = "Parts"\nkind = "required"\nmin = "1.4"\n')
+        self.assertEqual(self.errors(), [])
+        self.vehicle(
+            "Rover",
+            extra='\n[[dependencies]]\nkind = "recommends"\nany_of = [{ id = "Parts" }, { id = "OtherRover" }]\n',
+        )
+        self.assertEqual(
+            self.errors(),
+            [
+                "vehicles/Rover.toml: dependencies[0].any_of[1]: 'OtherRover' is listed as a vehicle, "
+                "and a dependency has to be a mod"
+            ],
+        )
+
+    def test_a_dependency_on_a_save_is_rejected(self):
+        self.vehicle("Base", "save")
+        self.listing("Mod", extra='\n[[dependencies]]\nid = "Base"\nkind = "required"\n')
+        self.assertEqual(
+            self.errors(),
+            ["listings/Mod.toml: dependencies[0]: 'Base' is listed as a save, and a dependency has to be a mod"],
+        )
+
     def test_an_any_of_alternative_is_checked_too(self):
         self.listing("StarMap", kind="mod-loader")
         self.listing(
@@ -278,6 +344,422 @@ class References(IndexCase):
     def test_a_self_reference_is_left_to_the_schema(self):
         self.listing("Mod", extra='\n[[dependencies]]\nid = "Mod"\nkind = "required"\n')
         self.assertEqual(self.errors(), [])
+
+
+def pins(*pinned, section="mods"):
+    return "".join(
+        f'\n[[{section}]]\nid = "{identifier}"\nversion = "{version}"\n'
+        for identifier, version in pinned
+    )
+
+
+class MemberCase(IndexCase):
+    """A temporary index beside a release folder of the generated repository."""
+
+    def setUp(self):
+        super().setUp()
+        self.releases = self.root / "releases"
+        self.releases.mkdir()
+
+    def stamp(self, identifier, version, **fields):
+        folder = self.releases / identifier
+        folder.mkdir(exist_ok=True)
+        (folder / f"{version}.json").write_text(
+            json.dumps({"id": identifier, "version": version, **fields}), encoding="utf-8"
+        )
+
+    def members(self, *pinned, delisted=(), section="mods"):
+        self.pack("Pack", extra=pins(*pinned, section=section))
+        entries, _ = self.load()
+        return check_index.check_members(
+            entries, ["packs/Pack/1.0.0.toml"], set(delisted), self.releases
+        )
+
+
+class Members(MemberCase):
+    """The pins of a changed pack version, against the listings and the stamped releases."""
+
+    def test_listed_members_at_stamped_releases_pass(self):
+        self.listing("Alpha")
+        self.listing("Beta")
+        self.stamp("Alpha", "1.0.0")
+        self.stamp("Beta", "0.4.0")
+        self.assertEqual(self.members(("Alpha", "1.0.0"), ("Beta", "0.4.0")), [])
+
+    def test_an_unlisted_member_is_refused_by_name(self):
+        errors = self.members(("NotListed", "1.0.0"))
+        self.assertEqual(len(errors), 1)
+        self.assertIn("packs/Pack/1.0.0.toml: mods[0]: 'NotListed' is not a listed mod", errors[0])
+
+    def test_every_refused_member_is_named(self):
+        self.listing("Alpha")
+        self.stamp("Alpha", "1.0.0")
+        errors = self.members(("Missing", "1.0.0"), ("Alpha", "1.0.0"), ("Gone", "2.0.0"))
+        self.assertEqual(len(errors), 2)
+        self.assertIn("mods[0]: 'Missing'", errors[0])
+        self.assertIn("mods[2]: 'Gone'", errors[1])
+
+    def test_a_loader_is_refused(self):
+        self.listing("StarMap", kind="mod-loader")
+        self.stamp("StarMap", "0.4.6")
+        errors = self.members(("StarMap", "0.4.6"))
+        self.assertEqual(len(errors), 1)
+        self.assertIn("listed as a mod-loader", errors[0])
+
+    def test_a_delisted_member_is_refused(self):
+        self.listing("Alpha")
+        self.stamp("Alpha", "1.0.0")
+        errors = self.members(("Alpha", "1.0.0"), delisted={"alpha"})
+        self.assertEqual(len(errors), 1)
+        self.assertIn("'Alpha' is delisted", errors[0])
+
+    def test_a_version_with_no_stamped_release_is_refused(self):
+        self.listing("Alpha")
+        self.stamp("Alpha", "1.0.0")
+        errors = self.members(("Alpha", "1.1.0"))
+        self.assertEqual(len(errors), 1)
+        self.assertIn("'Alpha' has no stamped release 1.1.0", errors[0])
+
+    def test_a_yanked_release_is_refused(self):
+        self.listing("Alpha")
+        self.stamp("Alpha", "1.0.0", yanked=True, yanked_reason="broken")
+        errors = self.members(("Alpha", "1.0.0"))
+        self.assertEqual(len(errors), 1)
+        self.assertIn("'Alpha' 1.0.0 is yanked", errors[0])
+
+    def test_a_version_that_is_not_semver_is_left_to_the_schema(self):
+        self.listing("Alpha")
+        (self.root / "outside.json").write_text("[]", encoding="utf-8")
+        self.assertEqual(self.members(("Alpha", "../../outside")), [])
+
+    def test_a_release_that_is_not_an_object_raises_instead_of_refusing(self):
+        self.listing("Alpha")
+        (self.releases / "Alpha").mkdir()
+        (self.releases / "Alpha" / "1.0.0.json").write_text("[]", encoding="utf-8")
+        with self.assertRaises(ValueError):
+            self.members(("Alpha", "1.0.0"))
+
+    def test_an_unlisted_vehicle_or_save_is_refused_in_its_section(self):
+        for section, kind in (("vehicles", "vehicle"), ("saves", "save")):
+            with self.subTest(section=section):
+                self.assertEqual(
+                    self.members(("Craft", "1.0.0"), section=section),
+                    [
+                        f"packs/Pack/1.0.0.toml: {section}[0]: 'Craft' is not a listed {kind}, "
+                        f"and [[{section}]] pins only listed {kind}s"
+                    ],
+                )
+
+    def test_a_nested_pack_is_left_to_the_reference_check(self):
+        self.pack("Inner")
+        self.assertEqual(self.members(("Inner", "1.0.0")), [])
+
+    def test_an_unchanged_pack_version_is_not_checked(self):
+        self.pack("Pack", extra=pins(("Gone", "1.0.0")))
+        entries, _ = self.load()
+        self.assertEqual(check_index.check_members(entries, [], set(), self.root / "absent"), [])
+
+    def test_a_missing_release_folder_raises_instead_of_refusing(self):
+        self.pack("Pack", extra=pins(("Alpha", "1.0.0")))
+        entries, _ = self.load()
+        with self.assertRaises(OSError):
+            check_index.check_members(entries, ["packs/Pack/1.0.0.toml"], set(), self.root / "absent")
+
+    def test_dependencies_that_are_not_a_list_raise_instead_of_refusing(self):
+        self.listing("Alpha")
+        self.stamp("Alpha", "1.0.0", dependencies={"id": "Beta"})
+        with self.assertRaises(ValueError):
+            self.members(("Alpha", "1.0.0"))
+
+
+def requires(identifier, kind="required", **bounds):
+    return {"id": identifier, "kind": kind, "source": "authored", **bounds}
+
+
+class CompleteSet(MemberCase):
+    """The pins of a changed pack version meet each other's stamped dependencies."""
+
+    def setUp(self):
+        super().setUp()
+        for identifier in ("Alpha", "Beta", "Gamma"):
+            self.listing(identifier)
+        self.stamp("Beta", "1.0.0")
+        self.stamp("Beta", "2.0.0")
+        self.stamp("Beta", "2.1.0-rc.1")
+        self.stamp("Gamma", "1.0.0")
+
+    def needs(self, *dependencies):
+        self.stamp("Alpha", "1.0.0", dependencies=list(dependencies))
+
+    def test_a_required_dependency_pinned_in_its_bounds_passes(self):
+        self.needs(requires("Beta", min="1.0.0", max="2.0.0"))
+        for version in ("1.0.0", "2.0.0"):
+            with self.subTest(version=version):
+                self.assertEqual(self.members(("Alpha", "1.0.0"), ("Beta", version)), [])
+
+    def test_a_missing_required_dependency_is_named_with_the_release_that_needs_it(self):
+        self.needs(requires("Beta", min="2.0.0"))
+        self.assertEqual(
+            self.members(("Alpha", "1.0.0")),
+            [
+                "packs/Pack/1.0.0.toml: mods[0]: 'Alpha' 1.0.0 requires 'Beta' 2.0.0 or newer, "
+                "and the pack does not pin it"
+            ],
+        )
+
+    def test_a_required_dependency_pinned_outside_its_bounds_is_refused(self):
+        cases = (
+            ({"min": "2.0.0"}, "1.0.0", "'Beta' 2.0.0 or newer"),
+            ({"max": "1.0.0"}, "2.0.0", "'Beta' 1.0.0 or older"),
+            ({"min": "1.0.0", "max": "2.0.0"}, "2.1.0-rc.1", "'Beta' 1.0.0 to 2.0.0"),
+            ({"min": "2.1.0"}, "2.1.0-rc.1", "'Beta' 2.1.0 or newer"),
+        )
+        for bounds, version, wanted in cases:
+            with self.subTest(bounds=bounds, version=version):
+                self.needs(requires("Beta", **bounds))
+                errors = self.members(("Alpha", "1.0.0"), ("Beta", version))
+                self.assertEqual(len(errors), 1)
+                self.assertIn(f"requires {wanted}, and the pack pins 'Beta' {version}", errors[0])
+
+    def test_a_derived_dependency_counts_like_an_authored_one(self):
+        self.needs({"id": "Beta", "kind": "required", "source": "derived"})
+        errors = self.members(("Alpha", "1.0.0"))
+        self.assertEqual(len(errors), 1)
+        self.assertIn("requires 'Beta', and the pack does not pin it", errors[0])
+
+    def test_one_member_of_an_any_of_is_enough(self):
+        self.needs({"kind": "required", "any_of": [{"id": "Beta", "min": "2.0.0"}, {"id": "Gamma"}]})
+        self.assertEqual(self.members(("Alpha", "1.0.0"), ("Gamma", "1.0.0")), [])
+
+    def test_an_any_of_with_no_member_pinned_names_every_choice(self):
+        self.needs({"kind": "required", "any_of": [{"id": "Beta", "min": "2.0.0"}, {"id": "Gamma"}]})
+        errors = self.members(("Alpha", "1.0.0"), ("Beta", "1.0.0"))
+        self.assertEqual(len(errors), 1)
+        self.assertIn(
+            "requires one of 'Beta' 2.0.0 or newer, 'Gamma', and the pack pins 'Beta' 1.0.0", errors[0]
+        )
+
+    def test_a_conflict_with_another_member_is_refused(self):
+        self.needs(requires("Beta", kind="conflict"))
+        self.assertEqual(
+            self.members(("Alpha", "1.0.0"), ("Beta", "1.0.0")),
+            [
+                "packs/Pack/1.0.0.toml: mods[0]: 'Alpha' 1.0.0 conflicts with 'Beta', "
+                "and the pack pins 'Beta' 1.0.0"
+            ],
+        )
+
+    def test_a_conflict_outside_its_bounds_passes(self):
+        self.needs(requires("Beta", kind="conflict", max="1.0.0"))
+        self.assertEqual(self.members(("Alpha", "1.0.0"), ("Beta", "2.0.0")), [])
+
+    def test_a_conflict_with_the_member_itself_is_not_another_member(self):
+        self.needs(requires("Alpha", kind="conflict"))
+        self.assertEqual(self.members(("Alpha", "1.0.0")), [])
+
+    def test_a_conflict_with_a_mod_the_pack_does_not_pin_passes(self):
+        self.needs(requires("Beta", kind="conflict"))
+        self.assertEqual(self.members(("Alpha", "1.0.0")), [])
+
+    def test_only_required_dependencies_have_to_be_pinned(self):
+        self.needs(*(requires("Beta", kind=kind) for kind in ("optional", "recommends", "suggests")))
+        self.assertEqual(self.members(("Alpha", "1.0.0")), [])
+
+    def test_a_refused_pin_still_counts_as_pinned(self):
+        self.needs(requires("Beta", min="3.0.0"))
+        errors = self.members(("Alpha", "1.0.0"), ("Beta", "3.0.0"))
+        self.assertEqual(len(errors), 1)
+        self.assertIn("'Beta' has no stamped release 3.0.0", errors[0])
+
+
+class SharedMembers(MemberCase):
+    """Pins of vehicles and saves (RFC 0085), which need mods pinned in [[mods]]."""
+
+    WHERE = "packs/Pack/1.0.0.toml"
+
+    def setUp(self):
+        super().setUp()
+        self.listing("Parts")
+        self.listing("Alpha")
+        self.stamp("Parts", "1.3.0")
+        self.stamp("Parts", "1.4.0")
+        self.stamp("Alpha", "1.0.0")
+        self.vehicle("Rover")
+        self.stamp("Rover", "1.0.0", dependencies=[requires("Parts", min="1.4.0")])
+        self.vehicle("Base", kind="save")
+        self.stamp("Base", "1.0.0", dependencies=[requires("Parts")])
+
+    def check(self, mods=(), vehicles=(), saves=(), delisted=()):
+        extra = pins(*mods) + pins(*vehicles, section="vehicles") + pins(*saves, section="saves")
+        self.pack("Pack", extra=extra)
+        entries, _ = self.load()
+        errors = check_index.check_members(entries, [self.WHERE], set(delisted), self.releases)
+        return [line.removeprefix(f"{self.WHERE}: ") for line in errors]
+
+    def test_a_vehicle_and_a_save_with_their_mod_pass(self):
+        self.assertEqual(
+            self.check(mods=[("Parts", "1.4.0")], vehicles=[("Rover", "1.0.0")], saves=[("Base", "1.0.0")]), []
+        )
+
+    def test_a_vehicle_whose_mod_is_pinned_below_its_bound_names_the_vehicle_release(self):
+        self.assertEqual(
+            self.check(mods=[("Parts", "1.3.0")], vehicles=[("Rover", "1.0.0")]),
+            ["vehicles[0]: 'Rover' 1.0.0 requires 'Parts' 1.4.0 or newer, and the pack pins 'Parts' 1.3.0"],
+        )
+
+    def test_a_save_without_its_mod_is_refused(self):
+        self.assertEqual(
+            self.check(saves=[("Base", "1.0.0")]),
+            ["saves[0]: 'Base' 1.0.0 requires 'Parts', and the pack does not pin it"],
+        )
+
+    def test_only_a_pinned_mod_meets_a_dependency(self):
+        # A dependency is always a mod, so a vehicle pin with the same id meets nothing.
+        self.stamp("Alpha", "1.0.0", dependencies=[requires("Rover")])
+        self.assertEqual(
+            self.check(mods=[("Alpha", "1.0.0")], vehicles=[("Rover", "1.0.0")]),
+            [
+                "mods[0]: 'Alpha' 1.0.0 requires 'Rover', and the pack does not pin it",
+                "vehicles[0]: 'Rover' 1.0.0 requires 'Parts' 1.4.0 or newer, and the pack does not pin it",
+            ],
+        )
+
+    def test_a_vehicle_that_conflicts_with_a_pinned_mod_is_refused(self):
+        self.stamp("Rover", "1.0.0", dependencies=[requires("Alpha", kind="conflict")])
+        self.assertEqual(
+            self.check(mods=[("Alpha", "1.0.0")], vehicles=[("Rover", "1.0.0")]),
+            ["vehicles[0]: 'Rover' 1.0.0 conflicts with 'Alpha', and the pack pins 'Alpha' 1.0.0"],
+        )
+
+    def test_each_section_pins_only_its_own_type(self):
+        cases = (
+            ({"vehicles": [("Alpha", "1.0.0")]}, "vehicles[0]: 'Alpha' is listed as a mod, and [[vehicles]] pins only vehicles"),
+            ({"saves": [("Rover", "1.0.0")]}, "saves[0]: 'Rover' is listed as a vehicle, and [[saves]] pins only saves"),
+            ({"vehicles": [("Base", "1.0.0")]}, "vehicles[0]: 'Base' is listed as a save, and [[vehicles]] pins only vehicles"),
+            ({"mods": [("Rover", "1.0.0")]}, "mods[0]: 'Rover' is listed as a vehicle, and a pack pins only mods"),
+        )
+        for sections, error in cases:
+            with self.subTest(error):
+                self.setUp()
+                self.assertEqual(self.check(**sections), [error])
+
+    def test_a_delisted_unstamped_or_yanked_vehicle_or_save_is_refused(self):
+        for section, identifier, kind in (("vehicles", "Rover", "vehicle"), ("saves", "Base", "save")):
+            with self.subTest(section=section):
+                self.setUp()
+                pinned = {"mods": [("Parts", "1.4.0")], section: [(identifier, "1.0.0")]}
+                self.assertEqual(
+                    self.check(**pinned, delisted={identifier.casefold()}),
+                    [f"{section}[0]: '{identifier}' is delisted, and [[{section}]] pins only listed {kind}s"],
+                )
+                self.assertEqual(
+                    self.check(mods=[("Parts", "1.4.0")], **{section: [(identifier, "2.0.0")]}),
+                    [f"{section}[0]: '{identifier}' has no stamped release 2.0.0"],
+                )
+                self.stamp(identifier, "1.0.0", yanked=True, yanked_reason="broken")
+                self.assertEqual(self.check(**pinned), [f"{section}[0]: '{identifier}' 1.0.0 is yanked"])
+
+
+PACK_VECTORS = Path(__file__).resolve().parent.parent / "schemas" / "pack-vectors.json"
+VECTOR_KEYS = {"name", "snapshot", "pack", "accepted", "errors", "notes"}
+SNAPSHOT_KEYS = {"listings", "vehicles", "saves", "delisted", "disputed"}
+
+
+class PackVectors(MemberCase):
+    """schemas/pack-vectors.json, the member cases that site/test/ runs on the page too."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.vectors = json.loads(PACK_VECTORS.read_text(encoding="utf-8"))["vectors"]
+
+    def run_vector(self, vector, extra=""):
+        """The errors and notes of the vector, each without the path of the pack file."""
+        snapshot = vector["snapshot"]
+        for listed in snapshot["listings"]:
+            self.listing(listed["id"], kind=listed["type"])
+        for listed in snapshot.get("vehicles", []) + snapshot.get("saves", []):
+            self.vehicle(listed["id"], kind=listed["type"])
+        for listed in snapshot["listings"] + snapshot.get("vehicles", []) + snapshot.get("saves", []):
+            folder = self.releases / listed["id"]
+            folder.mkdir(exist_ok=True)
+            for release in listed["releases"]:
+                (folder / f"{release['version']}.json").write_text(json.dumps(release), encoding="utf-8")
+        document = tomllib.loads(vector["pack"])
+        where = f"packs/{document['id']}/{document['version']}.toml"
+        folder = self.packs / document["id"]
+        folder.mkdir(exist_ok=True)
+        (folder / f"{document['version']}.toml").write_text(vector["pack"] + extra, encoding="utf-8")
+        entries, skipped = self.load()
+        self.assertEqual(skipped, [])
+        delisted = {identifier.casefold() for identifier in snapshot.get("delisted", [])}
+        disputed = {identifier.casefold() for identifier in snapshot.get("disputed", [])}
+        errors = check_index.check_members(entries, [where], delisted, self.releases)
+        notes = check_index.member_notes(entries, [where], disputed)
+        for line in errors + notes:
+            self.assertTrue(line.startswith(f"{where}: "), line)
+        return [line[len(where) + 2:] for line in errors], [line[len(where) + 2:] for line in notes]
+
+    def test_each_vector_is_well_formed(self):
+        names = [vector["name"] for vector in self.vectors]
+        self.assertEqual(len(names), len(set(names)), "vector names are unique")
+        for vector in self.vectors:
+            with self.subTest(vector["name"]):
+                self.assertLessEqual(VECTOR_KEYS, set(vector))
+                self.assertLessEqual(set(vector), VECTOR_KEYS | {"adds"})
+                self.assertLessEqual(set(vector["snapshot"]), SNAPSHOT_KEYS)
+                self.assertEqual(vector["accepted"], not vector["errors"])
+
+    def test_the_checks_agree_with_each_vector(self):
+        for vector in self.vectors:
+            with self.subTest(vector["name"]):
+                self.setUp()
+                self.assertEqual(self.run_vector(vector), (vector["errors"], vector["notes"]))
+
+    def test_the_pins_the_page_adds_make_a_set_that_passes(self):
+        adding = [vector for vector in self.vectors if vector.get("adds")]
+        self.assertTrue(adding)
+        for vector in adding:
+            with self.subTest(vector["name"]):
+                self.setUp()
+                extra = "".join(
+                    f'\n[[mods]]\nid = "{pin["id"]}"\nversion = "{pin["version"]}"\n' for pin in vector["adds"]
+                )
+                errors, _ = self.run_vector(vector, extra)
+                self.assertEqual(errors, [])
+
+    def test_the_pack_of_content_index_117_is_the_file_on_main(self):
+        path = Path(__file__).resolve().parent.parent / "packs" / "beiks-flight-planning-essentials-pack" / "1.0.0.toml"
+        packs = [vector["pack"] for vector in self.vectors if "content-index#117" in vector["name"]]
+        self.assertEqual(packs, [path.read_text(encoding="utf-8")])
+
+
+class DisputedMembers(MemberCase):
+    def test_a_disputed_mod_is_noted_and_other_pins_are_not(self):
+        self.listing("Alpha")
+        self.listing("Beta")
+        self.listing("Loader", kind="mod-loader")
+        self.pack("Pack", extra=pins(("Alpha", "1.0.0"), ("Beta", "1.0.0"), ("Loader", "1.0.0")))
+        entries, _ = self.load()
+        self.assertEqual(
+            check_index.member_notes(entries, ["packs/Pack/1.0.0.toml"], {"alpha", "loader"}),
+            ["packs/Pack/1.0.0.toml: mods[0]: 'Alpha' is disputed, and a client warns about it"],
+        )
+        self.assertEqual(check_index.member_notes(entries, [], {"alpha"}), [])
+
+    def test_a_disputed_vehicle_or_save_is_noted_in_its_section_only(self):
+        self.vehicle("Rover")
+        self.vehicle("Base", kind="save")
+        extra = pins(("Rover", "1.0.0"), section="vehicles") + pins(("Base", "1.0.0"), section="saves")
+        extra += pins(("Rover", "1.0.0"), section="saves")
+        self.pack("Pack", extra=extra)
+        entries, _ = self.load()
+        self.assertEqual(
+            check_index.member_notes(entries, ["packs/Pack/1.0.0.toml"], {"rover", "base"}),
+            [
+                "packs/Pack/1.0.0.toml: vehicles[0]: 'Rover' is disputed, and a client warns about it",
+                "packs/Pack/1.0.0.toml: saves[0]: 'Base' is disputed, and a client warns about it",
+            ],
+        )
 
 
 class Forums(IndexCase):
@@ -353,6 +835,60 @@ class Abstracts(IndexCase):
         self.assertEqual(self.notes(), [])
 
 
+class GameMax(IndexCase):
+    VERSIONS = ["2026.10.7.5541", "2026.10.10.5554", "2026.10.13.5602"]
+
+    def bounded(self, bound, *documents, kind="listing"):
+        line = f'game_min = "2026.8.3.5117"\ngame_max = "{bound}"'
+        if kind == "listing":
+            path = self.listing("Mod")
+        else:
+            path = self.pack("Pack")
+        path.write_text(
+            path.read_text(encoding="utf-8").replace('game_min = "2026.8.3.5117"', line),
+            encoding="utf-8",
+        )
+        entries, _ = self.load()
+        return check_index.bounded(entries, documents)
+
+    def test_a_game_max_at_the_newest_build_is_noted(self):
+        bounds = self.bounded("2026.10.13.5602", "listings/Mod.toml")
+        self.assertEqual(
+            check_index.game_max_notes(bounds, self.VERSIONS),
+            [
+                "listings/Mod.toml: compatibility.game_max: '2026.10.13.5602' is the newest game "
+                "build the index knows, and clients block the content on every build above "
+                "game_max, so a game_max that only says which build the content was tested with "
+                "blocks it on the next game update"
+            ],
+        )
+        self.assertEqual(self.errors(), [])
+
+    def test_a_pack_is_noted_too(self):
+        bounds = self.bounded("2026.10.13.5602", "packs/Pack/1.0.0.toml", kind="pack")
+        notes = check_index.game_max_notes(bounds, self.VERSIONS)
+        self.assertEqual(len(notes), 1)
+        self.assertTrue(notes[0].startswith("packs/Pack/1.0.0.toml: compatibility.game_max: "))
+
+    def test_revisions_compare_and_the_newest_is_the_highest(self):
+        bounds = self.bounded("2026.10.12.5602", "listings/Mod.toml")
+        self.assertEqual(len(check_index.game_max_notes(bounds, list(reversed(self.VERSIONS)))), 1)
+
+    def test_an_older_build_is_fine(self):
+        bounds = self.bounded("2026.10.10.5554", "listings/Mod.toml")
+        self.assertEqual(check_index.game_max_notes(bounds, self.VERSIONS), [])
+
+    def test_a_month_is_not_compared(self):
+        self.assertEqual(self.bounded("2026.10", "listings/Mod.toml"), [])
+
+    def test_an_unchanged_document_is_not_noted(self):
+        self.assertEqual(self.bounded("2026.10.13.5602"), [])
+
+    def test_an_empty_release_list_gives_no_note(self):
+        bounds = self.bounded("2026.10.13.5602", "listings/Mod.toml")
+        self.assertEqual(check_index.game_max_notes(bounds, []), [])
+
+
 class Loading(IndexCase):
     def test_a_document_that_does_not_parse_is_skipped_and_named(self):
         (self.listings / "Broken.toml").write_text("id = ", encoding="utf-8")
@@ -384,6 +920,38 @@ class Loading(IndexCase):
         self.listing("Mod")
         entries, _ = self.load()
         self.assertEqual(entries[0].where, "listings/Mod.toml")
+
+    def test_vehicles_and_saves_load_with_their_own_holder(self):
+        self.listing("Mod")
+        self.vehicle("Rover")
+        self.vehicle("Base", "save")
+        entries, _ = self.load()
+        self.assertEqual(
+            [(entry.where, entry.holder) for entry in entries],
+            [
+                ("listings/Mod.toml", ("listing", "Mod")),
+                ("vehicles/Rover.toml", ("vehicle", "Rover")),
+                ("saves/Base.toml", ("save", "Base")),
+            ],
+        )
+
+    def test_a_vehicle_in_a_subfolder_is_not_loaded(self):
+        nested = self.root / "vehicles" / "nested"
+        nested.mkdir(parents=True)
+        (nested / "Rover.toml").write_text(VEHICLE.format(id="Rover", type="vehicle", extra=""), encoding="utf-8")
+        entries, _ = self.load()
+        self.assertEqual(entries, [])
+
+    def test_the_schema_check_reads_the_same_documents(self):
+        self.listing("Mod")
+        self.vehicle("Rover")
+        self.vehicle("Base", "save")
+        self.pack("Pack")
+        folders = {"LISTINGS": "listings", "VEHICLES": "vehicles", "SAVES": "saves", "PACKS": "packs"}
+        with mock.patch.multiple(check_schema, **{name: self.root / folder for name, folder in folders.items()}):
+            read = check_schema.documents()
+        entries, _ = self.load()
+        self.assertEqual(read, [entry.path for entry in entries])
 
 
 if __name__ == "__main__":

@@ -15,6 +15,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import check_edits
+import check_hosts
 import check_images
 import check_index
 import check_layout
@@ -34,21 +36,50 @@ COULD_NOT_EVALUATE = "could-not-evaluate"
 
 SEVERITY = (REJECT, COULD_NOT_EVALUATE, PASS)
 
-VERDICT_SCHEMA_VERSION = 1
+# Version 2 split the one list of messages of a check into errors, notes, the
+# lines that could not be checked, and lines for the job summary only.
+VERDICT_SCHEMA_VERSION = 2
 
 GITHUB_API = "https://api.github.com"
 USER_AGENT = "KSAModding-content-index-validation"
 
 
 class Check:
+    """What one check found.
 
-    def __init__(self, name, outcome, messages=()):
+    The errors say what has to change, the notes are for the author to know,
+    and the summary lines tell the author nothing, so only the job summary
+    shows them. The unchecked lines name what could not be checked, so that a
+    check that rejects one document can still say that it could not read
+    another. A check that could not evaluate at all can give its lines as
+    errors too, and the comment shows them as not checked.
+
+    A passing check has nothing to change, so giving it errors is a mistake.
+    """
+
+    def __init__(self, name, outcome, errors=(), notes=(), summary=(), unchecked=()):
         self.name = name
         self.outcome = outcome
-        self.messages = list(messages)
+        if outcome == PASS and errors:
+            raise ValueError(f"the passing check {name!r} was given errors")
+        self.errors = list(errors)
+        self.notes = list(notes)
+        self.summary = list(summary)
+        self.unchecked = list(unchecked)
+
+    @property
+    def messages(self):
+        return self.errors + self.unchecked + self.notes + self.summary
 
     def as_dict(self):
-        return {"name": self.name, "outcome": self.outcome, "messages": self.messages}
+        return {
+            "name": self.name,
+            "outcome": self.outcome,
+            "errors": self.errors,
+            "unchecked": self.unchecked,
+            "notes": self.notes,
+            "summary": self.summary,
+        }
 
 
 def worst(outcomes):
@@ -71,12 +102,38 @@ def run_schema():
     return Check("schema", REJECT if errors else PASS, errors)
 
 
-def run_index(entries, skipped=(), documents=()):
+def run_index(entries, skipped=(), documents=(), releases=None):
     errors = check_index.check(entries)
-    messages = list(errors) + check_index.notes(entries, documents)
-    if skipped:
-        messages.append(f"not read, they do not parse: {', '.join(skipped)}")
-    return Check("index", REJECT if errors else PASS, messages)
+    notes = check_index.notes(entries, documents)
+    # The layout check reads every file that this check skips and already names
+    # each one as an error, so the skipped line goes to the job summary only.
+    summary = [f"not read, they do not parse: {', '.join(skipped)}"] if skipped else []
+    bounds = check_index.bounded(entries, documents)
+    if bounds:
+        try:
+            versions = check_release.load_game_versions(releases)
+            notes += check_index.game_max_notes(bounds, versions)
+        except check_release.Unavailable as error:
+            summary.append(f"game_max was not compared with the newest game build: {error}")
+    return Check("index", REJECT if errors else PASS, errors, notes, summary)
+
+
+def touches_pack(documents):
+    return any(check_scope.kind_of(path) == check_scope.PACK_KIND for path in documents)
+
+
+def run_members(entries, documents=(), releases=None):
+    try:
+        errors = check_index.check_members(
+            entries,
+            documents,
+            check_status.delisted(),
+            check_release.releases_root(releases) / "releases",
+        )
+        notes = check_index.member_notes(entries, documents, check_status.disputed())
+    except (OSError, ValueError) as error:
+        return Check("pack members", COULD_NOT_EVALUATE, [f"the pins could not be checked: {error}"])
+    return Check("pack members", REJECT if errors else PASS, errors, notes)
 
 
 def run_license(entries):
@@ -89,12 +146,11 @@ def run_license(entries):
 def run_status(entries, skipped=()):
     """A state the snapshot builder cannot place fails the build, so catch it here."""
     errors, notes = check_status.check(entries)
-    messages = list(errors) + list(notes)
     if errors and skipped:
-        messages.append(
+        notes = notes + [
             f"a document that does not parse is not counted as a listing: {', '.join(skipped)}"
-        )
-    return Check("index status", REJECT if errors else PASS, messages)
+        ]
+    return Check("index status", REJECT if errors else PASS, errors, notes)
 
 
 def run_packs(changes):
@@ -105,7 +161,14 @@ def run_packs(changes):
 def run_tags(documents=(), inspect_documents=True):
     paths = [ROOT / path for path in documents] if inspect_documents else []
     errors, notes = check_tags.check(paths)
-    return Check("tags", REJECT if errors else PASS, list(errors) + list(notes))
+    return Check("tags", REJECT if errors else PASS, errors, notes)
+
+
+def run_hosts(documents=(), inspect_documents=True):
+    """hosts.toml, and the share host keys of the changed documents only (RFC 0094)."""
+    paths = [ROOT / path for path in documents] if inspect_documents else []
+    errors = check_hosts.check(paths)
+    return Check("share hosts", REJECT if errors else PASS, errors)
 
 
 def run_images(entries, documents=()):
@@ -117,25 +180,38 @@ def run_images(entries, documents=()):
         check_images.check_document(
             entry.where, entry.document, errors, notes if entry.where in changed else []
         )
-    return Check("images", REJECT if errors else PASS, errors + notes)
+    return Check("images", REJECT if errors else PASS, errors, notes)
+
+
+def run_edits(entries, documents=(), base=None, releases=None):
+    return Check("listing edit", PASS, notes=check_edits.notes(entries, documents, base, releases))
 
 
 def run_image_fetch(documents, base=None):
     if not documents:
-        return Check("image fetch", PASS, ["the change touches no document, so no image was fetched"])
+        return Check(
+            "image fetch", PASS,
+            summary=["the change touches no document, so no image was fetched"],
+        )
 
     outcomes = []
-    messages = []
+    errors, notes, summary, unchecked = [], [], [], []
     for path in documents:
-        outcome, lines = check_images.inspect_path(path, base)
-        outcomes.append(outcome)
-        messages.extend(lines)
-    return Check("image fetch", worst(outcomes), messages)
+        found = check_images.inspect_path(path, base)
+        outcomes.append(found.outcome)
+        errors.extend(found.errors)
+        notes.extend(found.notes)
+        summary.extend(found.summary)
+        unchecked.extend(found.unchecked)
+    return Check("image fetch", worst(outcomes), errors, notes, summary, unchecked)
 
 
 def run_release(documents, releases=None, token=None):
     if not documents:
-        return Check("release", PASS, ["the change touches no document, so no archive was inspected"])
+        return Check(
+            "release", PASS,
+            summary=["the change touches no document, so no archive was inspected"],
+        )
 
     try:
         results = check_release.inspect_paths(
@@ -144,13 +220,22 @@ def run_release(documents, releases=None, token=None):
     except check_release.Unavailable as error:
         return Check("release", COULD_NOT_EVALUATE, [str(error)])
 
-    messages = []
+    found = {PASS: [], REJECT: [], COULD_NOT_EVALUATE: []}
+    summary = []
     outcomes = []
     for path, outcome in sorted(results.items()):
         where = Path(path).relative_to(ROOT).as_posix()
         outcomes.append(outcome.outcome)
-        messages.extend(f"{where}: {message}" for message in outcome.messages)
-    return Check("release", worst(outcomes), messages)
+        found[outcome.outcome].extend(f"{where}: {message}" for message in outcome.messages)
+        summary.extend(f"{where}: {message}" for message in outcome.summary)
+    return Check(
+        "release",
+        worst(outcomes),
+        found[REJECT],
+        found[PASS],
+        summary,
+        found[COULD_NOT_EVALUATE],
+    )
 
 
 def run_checks(changes, skip_release=False, releases=None, token=None, base=None):
@@ -161,13 +246,19 @@ def run_checks(changes, skip_release=False, releases=None, token=None, base=None
     schema = run_schema()
     tags = run_tags(documents, inspect_documents=schema.outcome == PASS)
     packs = run_packs(changes)
-    gate = [layout, schema, tags, packs]
+    hosts = run_hosts(documents, inspect_documents=schema.outcome == PASS)
+    gate = [layout, schema, tags, packs, hosts]
     entries, skipped = check_index.load_documents()
-    checks = gate + [
-        run_index(entries, skipped, documents),
+    checks = gate + [run_index(entries, skipped, documents, releases)]
+    # A change that touches no pack version has no pin to check, so the
+    # verdict carries no pack members line for it.
+    if touches_pack(documents):
+        checks.append(run_members(entries, documents, releases))
+    checks += [
         run_license(entries),
         run_status(entries, skipped),
         run_images(entries, documents),
+        run_edits(entries, documents, base, releases),
     ]
 
     if skip_release:
@@ -175,7 +266,7 @@ def run_checks(changes, skip_release=False, releases=None, token=None, base=None
 
     if any(check.outcome == REJECT for check in gate):
         checks.extend(
-            Check(name, PASS, ["not inspected: the document has to pass layout and schema first"])
+            Check(name, PASS, notes=["not inspected: the document has to pass layout and schema first"])
             for name in ("image fetch", "release")
         )
         return checks
@@ -246,7 +337,10 @@ def summarise(verdict):
     lines.append("")
     for check in verdict["checks"]:
         lines.append(f"### {check['name']}: {check['outcome']}")
-        lines.extend(f"- {message}" for message in check["messages"] or ["nothing to report"])
+        found = [f"- error: {message}" for message in check["errors"]]
+        found += [f"- not checked: {message}" for message in check.get("unchecked") or []]
+        found += [f"- {message}" for message in check["notes"] + check["summary"]]
+        lines.extend(found or ["- nothing to report"])
         lines.append("")
     return "\n".join(lines)
 

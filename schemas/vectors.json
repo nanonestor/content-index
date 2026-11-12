@@ -83,6 +83,14 @@
       "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"MIT\"\ntags = [\"gameplay\"]\n\n[releases]\ngithub = \"example/ExampleMod\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n\n[install]\ntarget = \"game-root\"\n"
     },
     {
+      "name": "a mod does not name the mods folder as its target",
+      "rule": "schema",
+      "accepted": false,
+      "noted": false,
+      "says": "install.target: this key is not allowed here",
+      "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"MIT\"\ntags = [\"gameplay\"]\n\n[releases]\ngithub = \"example/ExampleMod\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n\n[install]\ntarget = \"mods\"\n"
+    },
+    {
       "name": "a mod loader install names its target",
       "rule": "schema",
       "accepted": false,
@@ -111,6 +119,97 @@
       "accepted": true,
       "noted": false,
       "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"MIT\"\ntags = [\"gameplay\"]\n\n[releases]\ngithub = \"example/ExampleMod\"\nspacedock = 4000\nauthority = \"spacedock\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n"
+    },
+    {
+      "name": "since names the oldest release to stamp",
+      "rule": "schema",
+      "accepted": true,
+      "noted": false,
+      "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"MIT\"\ntags = [\"gameplay\"]\n\n[releases]\ngithub = \"example/ExampleMod\"\nsince = \"1.2\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n"
+    },
+    {
+      "name": "since is a version",
+      "rule": "schema",
+      "accepted": false,
+      "noted": false,
+      "says": "'latest' is not a version such as 1.2.3, 0.5 or 2.0.0-rc.1",
+      "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"MIT\"\ntags = [\"gameplay\"]\n\n[releases]\ngithub = \"example/ExampleMod\"\nsince = \"latest\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n"
+    },
+    {
+      "name": "since is not a release host",
+      "rule": "schema",
+      "accepted": false,
+      "noted": false,
+      "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"MIT\"\ntags = [\"gameplay\"]\n\n[releases]\nsince = \"1.2\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n"
+    },
+    {
+      "name": "since next to two release hosts and an authority",
+      "rule": "schema",
+      "accepted": true,
+      "noted": false,
+      "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"MIT\"\ntags = [\"gameplay\"]\n\n[releases]\ngithub = \"example/ExampleMod\"\nspacedock = 4000\nauthority = \"spacedock\"\nsince = \"0.5.0-rc.1\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n"
+    },
+    {
+      "name": "tag_prefix selects the mod releases of a GitHub repository",
+      "rule": "schema",
+      "accepted": true,
+      "noted": false,
+      "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"MIT\"\ntags = [\"gameplay\"]\n\n[releases]\ngithub = \"example/ExampleMod\"\ntag_prefix = \"examplemod-v\"\nsince = \"1.2\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n"
+    },
+    {
+      "name": "tag_prefix next to a GitHub mirror",
+      "rule": "schema",
+      "accepted": true,
+      "noted": false,
+      "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"MIT\"\ntags = [\"gameplay\"]\n\n[releases]\ngithub = \"example/ExampleMod\"\nspacedock = 4000\nauthority = \"spacedock\"\ntag_prefix = \"examplemod-\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n"
+    },
+    {
+      "name": "tag_prefix has no whitespace",
+      "rule": "schema",
+      "accepted": false,
+      "noted": false,
+      "says": "'examplemod v' is not a non-empty ASCII string without whitespace",
+      "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"MIT\"\ntags = [\"gameplay\"]\n\n[releases]\ngithub = \"example/ExampleMod\"\ntag_prefix = \"examplemod v\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n"
+    },
+    {
+      "name": "tag_prefix does not end in a newline",
+      "rule": "schema",
+      "accepted": false,
+      "noted": false,
+      "says": "is not a non-empty ASCII string without whitespace",
+      "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"MIT\"\ntags = [\"gameplay\"]\n\n[releases]\ngithub = \"example/ExampleMod\"\ntag_prefix = \"examplemod-\\n\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n"
+    },
+    {
+      "name": "tag_prefix needs a GitHub repository",
+      "rule": "schema",
+      "accepted": false,
+      "noted": false,
+      "says": "releases: 'github' is a dependency of 'tag_prefix'",
+      "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"MIT\"\ntags = [\"gameplay\"]\n\n[releases]\nspacedock = 4000\ntag_prefix = \"examplemod-v\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n"
+    },
+    {
+      "name": "a share host key is lowercase",
+      "rule": "schema",
+      "accepted": false,
+      "noted": false,
+      "says": "releases: Additional properties are not allowed ('KSAMods' was unexpected)",
+      "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"MIT\"\ntags = [\"gameplay\"]\n\n[releases]\nKSAMods = \"ExampleMod\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n"
+    },
+    {
+      "name": "a share host is named with a listing id",
+      "rule": "schema",
+      "accepted": false,
+      "noted": false,
+      "says": "releases.ksamods: 'Example Mod' is not 1 to 64 ASCII letters",
+      "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"MIT\"\ntags = [\"gameplay\"]\n\n[releases]\nksamods = \"Example Mod\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n"
+    },
+    {
+      "name": "a misspelt release host is read as a share host",
+      "rule": "schema",
+      "accepted": false,
+      "noted": false,
+      "says": "releases.spacdock: 1234 is not of type 'string'; 'spacdock' is not github or spacedock, so the index reads it as a share host, whose value is the id of the listing",
+      "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"MIT\"\ntags = [\"gameplay\"]\n\n[releases]\nspacdock = 1234\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n"
     },
     {
       "name": "a GitHub repository is owner/repository",
@@ -358,6 +457,65 @@
       "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"MIT\"\ntags = [\"gameplay\"]\n\n[releases]\ngithub = \"example/ExampleMod\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n\n[loader]\nid = \"StarMap\"\nmin = \"v0.4.6\"\n"
     },
     {
+      "name": "a bound may name one or two numbers",
+      "rule": "bounds",
+      "accepted": true,
+      "noted": false,
+      "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"MIT\"\ntags = [\"gameplay\"]\n\n[releases]\ngithub = \"example/ExampleMod\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n\n[loader]\nid = \"StarMap\"\nmin = \"0.4\"\n\n[[dependencies]]\nid = \"OtherMod\"\nkind = \"required\"\nmin = \"1\"\n"
+    },
+    {
+      "name": "a short bound is its full form",
+      "rule": "bounds",
+      "accepted": true,
+      "noted": false,
+      "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"MIT\"\ntags = [\"gameplay\"]\n\n[releases]\ngithub = \"example/ExampleMod\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n\n[loader]\nid = \"StarMap\"\nmin = \"0.5\"\nmax = \"0.5.0\"\n"
+    },
+    {
+      "name": "a short bound is filled with zero before it is compared",
+      "rule": "bounds",
+      "accepted": false,
+      "noted": false,
+      "says": "max '0.5' is below min '0.5.1'",
+      "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"MIT\"\ntags = [\"gameplay\"]\n\n[releases]\ngithub = \"example/ExampleMod\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n\n[loader]\nid = \"StarMap\"\nmin = \"0.5.1\"\nmax = \"0.5\"\n"
+    },
+    {
+      "name": "a short pre-release is below its release",
+      "rule": "bounds",
+      "accepted": true,
+      "noted": false,
+      "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"MIT\"\ntags = [\"gameplay\"]\n\n[releases]\ngithub = \"example/ExampleMod\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n\n[loader]\nid = \"StarMap\"\nmin = \"1.2-rc.1\"\nmax = \"1.2\"\n"
+    },
+    {
+      "name": "a short bound may carry build metadata",
+      "rule": "bounds",
+      "accepted": true,
+      "noted": false,
+      "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"MIT\"\ntags = [\"gameplay\"]\n\n[releases]\ngithub = \"example/ExampleMod\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n\n[loader]\nid = \"StarMap\"\nmin = \"1.2+build.7\"\nmax = \"1.2.0\"\n"
+    },
+    {
+      "name": "a bound has at most three numbers",
+      "rule": "bounds",
+      "accepted": false,
+      "noted": false,
+      "says": "'0.4.5.1' is not a version such as 1.2.3, 0.5 or 2.0.0-rc.1",
+      "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"MIT\"\ntags = [\"gameplay\"]\n\n[releases]\ngithub = \"example/ExampleMod\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n\n[loader]\nid = \"StarMap\"\nmin = \"0.4.5.1\"\n"
+    },
+    {
+      "name": "a bound number has no leading zero",
+      "rule": "bounds",
+      "accepted": false,
+      "noted": false,
+      "says": "'01.2' is not a version",
+      "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"MIT\"\ntags = [\"gameplay\"]\n\n[releases]\ngithub = \"example/ExampleMod\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n\n[[dependencies]]\nid = \"OtherMod\"\nkind = \"required\"\nmin = \"01.2\"\n"
+    },
+    {
+      "name": "an alternative may have short bounds",
+      "rule": "bounds",
+      "accepted": true,
+      "noted": false,
+      "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"MIT\"\ntags = [\"gameplay\"]\n\n[releases]\ngithub = \"example/ExampleMod\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n\n[[dependencies]]\nkind = \"recommends\"\nany_of = [{ id = \"OtherMod\", min = \"1\", max = \"1.4\" }]\n"
+    },
+    {
       "name": "a dependency max is not below its min",
       "rule": "bounds",
       "accepted": false,
@@ -380,6 +538,61 @@
       "noted": false,
       "says": "'othermod' already has a dependency entry",
       "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"MIT\"\ntags = [\"gameplay\"]\n\n[releases]\ngithub = \"example/ExampleMod\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n\n[[dependencies]]\nid = \"OtherMod\"\nkind = \"required\"\n\n[[dependencies]]\nid = \"othermod\"\nkind = \"optional\"\n"
+    },
+    {
+      "name": "a dependency kind is one the index knows",
+      "rule": "bounds",
+      "accepted": false,
+      "noted": false,
+      "says": "'needs' is not one of ['required', 'optional', 'recommends', 'suggests', 'conflict']",
+      "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"MIT\"\ntags = [\"gameplay\"]\n\n[releases]\ngithub = \"example/ExampleMod\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n\n[[dependencies]]\nid = \"OtherMod\"\nkind = \"needs\"\n"
+    },
+    {
+      "name": "a conflict may name the versions that conflict",
+      "rule": "bounds",
+      "accepted": true,
+      "noted": false,
+      "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"MIT\"\ntags = [\"gameplay\"]\n\n[releases]\ngithub = \"example/ExampleMod\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n\n[[dependencies]]\nid = \"OtherMod\"\nkind = \"conflict\"\nmin = \"1.0\"\nmax = \"1.2.3\"\n"
+    },
+    {
+      "name": "bound numbers of any size are compared exactly",
+      "rule": "bounds",
+      "accepted": false,
+      "noted": false,
+      "says": "max '9007199254740992' is below min '9007199254740993'",
+      "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"MIT\"\ntags = [\"gameplay\"]\n\n[releases]\ngithub = \"example/ExampleMod\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n\n[[dependencies]]\nid = \"OtherMod\"\nkind = \"required\"\nmin = \"9007199254740993\"\nmax = \"9007199254740992\"\n"
+    },
+    {
+      "name": "a bound with a leading zero is still compared",
+      "rule": "bounds",
+      "accepted": false,
+      "noted": false,
+      "says": "max '1.0' is below min '02.0'",
+      "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"MIT\"\ntags = [\"gameplay\"]\n\n[releases]\ngithub = \"example/ExampleMod\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n\n[[dependencies]]\nid = \"OtherMod\"\nkind = \"required\"\nmin = \"02.0\"\nmax = \"1.0\"\n"
+    },
+    {
+      "name": "a bound in other decimal digits is still compared",
+      "rule": "bounds",
+      "accepted": false,
+      "noted": false,
+      "says": "max '1.0' is below min '\u0662.0'",
+      "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"MIT\"\ntags = [\"gameplay\"]\n\n[releases]\ngithub = \"example/ExampleMod\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n\n[[dependencies]]\nid = \"OtherMod\"\nkind = \"required\"\nmin = \"\u0662.0\"\nmax = \"1.0\"\n"
+    },
+    {
+      "name": "a pre-release with fewer identifiers is below one with more",
+      "rule": "bounds",
+      "accepted": false,
+      "noted": false,
+      "says": "max '1.0.0-rc' is below min '1.0.0-rc.1'",
+      "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"MIT\"\ntags = [\"gameplay\"]\n\n[releases]\ngithub = \"example/ExampleMod\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n\n[[dependencies]]\nid = \"OtherMod\"\nkind = \"required\"\nmin = \"1.0.0-rc.1\"\nmax = \"1.0.0-rc\"\n"
+    },
+    {
+      "name": "a numeric pre-release identifier is below a text one",
+      "rule": "bounds",
+      "accepted": false,
+      "noted": false,
+      "says": "max '1.0.0-1' is below min '1.0.0-alpha'",
+      "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"MIT\"\ntags = [\"gameplay\"]\n\n[releases]\ngithub = \"example/ExampleMod\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n\n[[dependencies]]\nid = \"OtherMod\"\nkind = \"required\"\nmin = \"1.0.0-alpha\"\nmax = \"1.0.0-1\"\n"
     },
     {
       "name": "an alternative is named once",
@@ -500,6 +713,46 @@
       "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"Foo-License\"\ntags = [\"gameplay\"]\n\n[releases]\ngithub = \"example/ExampleMod\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n"
     },
     {
+      "name": "a license without a version is not an SPDX id",
+      "rule": "license",
+      "accepted": false,
+      "noted": false,
+      "says": "'GPL' names GPL, which is not on the SPDX license list; ids close to GPL are GPL-1.0-only, GPL-2.0-only, GPL-3.0-only, GPL-1.0-or-later, GPL-2.0-or-later and GPL-3.0-or-later; the identifiers are at https://spdx.org/licenses/",
+      "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"GPL\"\ntags = [\"gameplay\"]\n\n[releases]\ngithub = \"example/ExampleMod\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n"
+    },
+    {
+      "name": "a name with one close id names that id",
+      "rule": "license",
+      "accepted": false,
+      "noted": false,
+      "says": "'CC0' names CC0, which is not on the SPDX license list; the id close to CC0 is CC0-1.0; the identifiers are at https://spdx.org/licenses/",
+      "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"CC0\"\ntags = [\"gameplay\"]\n\n[releases]\ngithub = \"example/ExampleMod\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n"
+    },
+    {
+      "name": "a v before the version still finds the close ids",
+      "rule": "license",
+      "accepted": false,
+      "noted": false,
+      "says": "ids close to GPLv3 are GPL-1.0-only, GPL-2.0-only, GPL-3.0-only,",
+      "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"GPLv3\"\ntags = [\"gameplay\"]\n\n[releases]\ngithub = \"example/ExampleMod\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n"
+    },
+    {
+      "name": "a short name that only the license library reads is not an SPDX id",
+      "rule": "license",
+      "accepted": false,
+      "noted": false,
+      "says": "'Verbatim-man-pages' names Verbatim-man-pages, which is not on the SPDX license list; the identifiers are at https://spdx.org/licenses/",
+      "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"Verbatim-man-pages\"\ntags = [\"gameplay\"]\n\n[releases]\ngithub = \"example/ExampleMod\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n"
+    },
+    {
+      "name": "a name after WITH gets exceptions as close ids",
+      "rule": "license",
+      "accepted": false,
+      "noted": false,
+      "says": "'GPL-2.0-only WITH Classpath' names Classpath, which is not on the SPDX license list; the id close to Classpath is Classpath-exception-2.0; the identifiers are at https://spdx.org/licenses/",
+      "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"GPL-2.0-only WITH Classpath\"\ntags = [\"gameplay\"]\n\n[releases]\ngithub = \"example/ExampleMod\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n"
+    },
+    {
       "name": "an exception that is not on the SPDX list",
       "rule": "license",
       "accepted": false,
@@ -591,7 +844,47 @@
       "accepted": false,
       "noted": false,
       "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"MIT Apache-2.0\"\ntags = [\"gameplay\"]\n\n[releases]\ngithub = \"example/ExampleMod\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n",
-      "says": "names Apache-2.0"
+      "says": "'MIT Apache-2.0' has two license identifiers with no operator between them"
+    },
+    {
+      "name": "a license and a license reference with no operator between them",
+      "rule": "license",
+      "accepted": false,
+      "noted": false,
+      "says": "'MIT LicenseRef-MyModLicense' has two license identifiers with no operator between them",
+      "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"MIT LicenseRef-MyModLicense\"\ntags = [\"gameplay\"]\n\n[releases]\ngithub = \"example/ExampleMod\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n"
+    },
+    {
+      "name": "a license reference and a license with no operator between them",
+      "rule": "license",
+      "accepted": false,
+      "noted": false,
+      "says": "'LicenseRef-MyModLicense MIT' has two license identifiers with no operator between them",
+      "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"LicenseRef-MyModLicense MIT\"\ntags = [\"gameplay\"]\n\n[releases]\ngithub = \"example/ExampleMod\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n"
+    },
+    {
+      "name": "two license references with no operator between them",
+      "rule": "license",
+      "accepted": false,
+      "noted": false,
+      "says": "'LicenseRef-MyModLicense LicenseRef-OtherLicense' has two license identifiers with no operator between them",
+      "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"LicenseRef-MyModLicense LicenseRef-OtherLicense\"\ntags = [\"gameplay\"]\n\n[releases]\ngithub = \"example/ExampleMod\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n"
+    },
+    {
+      "name": "an exception where a license belongs",
+      "rule": "license",
+      "accepted": false,
+      "noted": false,
+      "says": "'MIT Classpath-exception-2.0' names Classpath-exception-2.0, which is not on the SPDX license list",
+      "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"MIT Classpath-exception-2.0\"\ntags = [\"gameplay\"]\n\n[releases]\ngithub = \"example/ExampleMod\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n"
+    },
+    {
+      "name": "a second exception after the one WITH names",
+      "rule": "license",
+      "accepted": false,
+      "noted": false,
+      "says": "'GPL-2.0-only WITH Classpath-exception-2.0 Autoconf-exception-2.0' names Autoconf-exception-2.0, which is not on the SPDX license list",
+      "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"GPL-2.0-only WITH Classpath-exception-2.0 Autoconf-exception-2.0\"\ntags = [\"gameplay\"]\n\n[releases]\ngithub = \"example/ExampleMod\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n"
     },
     {
       "name": "no tags",
@@ -637,6 +930,21 @@
       "accepted": false,
       "noted": true,
       "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"MIT\"\ntags = [\"user_interface\"]\n\n[releases]\ngithub = \"example/ExampleMod\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n"
+    },
+    {
+      "name": "a vehicle tag outside the curated list gives no note",
+      "rule": "tags",
+      "accepted": true,
+      "noted": false,
+      "toml": "spec_version = 1\nid = \"ExampleRover\"\ntype = \"vehicle\"\nname = \"Example Rover\"\nauthors = [\"Example Author\"]\nabstract = \"A six-wheel rover for the Moon.\"\nlicense = \"CC-BY-4.0\"\ntags = [\"rover\"]\n"
+    },
+    {
+      "name": "a vehicle tag in upper case",
+      "rule": "tags",
+      "accepted": false,
+      "noted": false,
+      "says": "tags[0]: 'Rover' is not lowercase letters and digits",
+      "toml": "spec_version = 1\nid = \"ExampleRover\"\ntype = \"vehicle\"\nname = \"Example Rover\"\nauthors = [\"Example Author\"]\nabstract = \"A six-wheel rover for the Moon.\"\nlicense = \"CC-BY-4.0\"\ntags = [\"Rover\"]\n"
     },
     {
       "name": "a square icon",
@@ -826,6 +1134,180 @@
       "noted": true,
       "says": "281 characters is longer than 280",
       "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.\"\nlicense = \"MIT\"\ntags = [\"gameplay\"]\n\n[releases]\ngithub = \"example/ExampleMod\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\n"
+    },
+    {
+      "name": "a minimal pack",
+      "rule": "schema",
+      "accepted": true,
+      "noted": false,
+      "toml": "spec_version = 1\nid = \"ExamplePack\"\ntype = \"modpack\"\nname = \"Example Pack\"\nauthors = [\"Example Author\"]\nabstract = \"Two mods for mission planning.\"\nlicense = \"MIT\"\ntags = [\"user-interface\"]\nversion = \"1.0.0\"\nreleased_at = \"2026-09-25T12:00:00Z\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-pack.1/\"\n\n[compatibility]\ngame_min = \"2026.9.22.5482\"\n\n[[mods]]\nid = \"DeltaVMap\"\nversion = \"1.0.0\"\n\n[[mods]]\nid = \"Compendium\"\nversion = \"1.0.0\"\n"
+    },
+    {
+      "name": "a pack pins a mod once",
+      "rule": "id",
+      "accepted": false,
+      "noted": false,
+      "says": "'deltavmap' is pinned by mods[0]",
+      "toml": "spec_version = 1\nid = \"ExamplePack\"\ntype = \"modpack\"\nname = \"Example Pack\"\nauthors = [\"Example Author\"]\nabstract = \"Two mods for mission planning.\"\nlicense = \"MIT\"\ntags = [\"user-interface\"]\nversion = \"1.0.0\"\nreleased_at = \"2026-09-25T12:00:00Z\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-pack.1/\"\n\n[compatibility]\ngame_min = \"2026.9.22.5482\"\n\n[[mods]]\nid = \"DeltaVMap\"\nversion = \"1.0.0\"\n\n[[mods]]\nid = \"deltavmap\"\nversion = \"1.0.0\"\n"
+    },
+    {
+      "name": "a pack cannot pin itself",
+      "rule": "id",
+      "accepted": false,
+      "noted": false,
+      "says": "a pack cannot pin itself",
+      "toml": "spec_version = 1\nid = \"ExamplePack\"\ntype = \"modpack\"\nname = \"Example Pack\"\nauthors = [\"Example Author\"]\nabstract = \"Two mods for mission planning.\"\nlicense = \"MIT\"\ntags = [\"user-interface\"]\nversion = \"1.0.0\"\nreleased_at = \"2026-09-25T12:00:00Z\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-pack.1/\"\n\n[compatibility]\ngame_min = \"2026.9.22.5482\"\n\n[[mods]]\nid = \"examplepack\"\nversion = \"1.0.0\"\n"
+    },
+    {
+      "name": "a pack release time names a day the calendar has not",
+      "rule": "schema",
+      "accepted": false,
+      "noted": false,
+      "says": "is not a real date and time",
+      "toml": "spec_version = 1\nid = \"ExamplePack\"\ntype = \"modpack\"\nname = \"Example Pack\"\nauthors = [\"Example Author\"]\nabstract = \"Two mods for mission planning.\"\nlicense = \"MIT\"\ntags = [\"user-interface\"]\nversion = \"1.0.0\"\nreleased_at = \"2026-09-31T12:00:00Z\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-pack.1/\"\n\n[compatibility]\ngame_min = \"2026.9.22.5482\"\n\n[[mods]]\nid = \"DeltaVMap\"\nversion = \"1.0.0\"\n"
+    },
+    {
+      "name": "a pack release time may fall on a leap day",
+      "rule": "schema",
+      "accepted": true,
+      "noted": false,
+      "toml": "spec_version = 1\nid = \"ExamplePack\"\ntype = \"modpack\"\nname = \"Example Pack\"\nauthors = [\"Example Author\"]\nabstract = \"Two mods for mission planning.\"\nlicense = \"MIT\"\ntags = [\"user-interface\"]\nversion = \"1.0.0\"\nreleased_at = \"2028-02-29T23:59:59.5Z\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-pack.1/\"\n\n[compatibility]\ngame_min = \"2026.9.22.5482\"\n\n[[mods]]\nid = \"DeltaVMap\"\nversion = \"1.0.0\"\n"
+    },
+    {
+      "name": "a minimal vehicle",
+      "rule": "schema",
+      "accepted": true,
+      "noted": false,
+      "toml": "spec_version = 1\nid = \"ExampleRover\"\ntype = \"vehicle\"\nname = \"Example Rover\"\nauthors = [\"Example Author\"]\nabstract = \"A six-wheel rover for the Moon.\"\nlicense = \"CC-BY-4.0\"\n"
+    },
+    {
+      "name": "a vehicle on a share host",
+      "rule": "schema",
+      "accepted": true,
+      "noted": false,
+      "toml": "spec_version = 1\nid = \"ExampleRover\"\ntype = \"vehicle\"\nname = \"Example Rover\"\nauthors = [\"Example Author\"]\nabstract = \"A six-wheel rover for the Moon.\"\nlicense = \"CC-BY-4.0\"\n\n[releases]\nksamods = \"ExampleRover\"\n"
+    },
+    {
+      "name": "the example vehicle of RFC 0085",
+      "rule": "schema",
+      "accepted": true,
+      "noted": false,
+      "toml": "spec_version = 1\nid = \"ExampleRover\"\ntype = \"vehicle\"\nname = \"Example Rover\"\nauthors = [\"Example Author\"]\nabstract = \"A six-wheel rover for the Moon.\"\nlicense = \"CC-BY-4.0\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-rover.1000/\"\n\n[[dependencies]]\nid = \"ExamplePartsMod\"\nkind = \"required\"\nmin = \"1.4.0\"\n"
+    },
+    {
+      "name": "a vehicle with only game_max",
+      "rule": "schema",
+      "accepted": true,
+      "noted": false,
+      "toml": "spec_version = 1\nid = \"ExampleRover\"\ntype = \"vehicle\"\nname = \"Example Rover\"\nauthors = [\"Example Author\"]\nabstract = \"A six-wheel rover for the Moon.\"\nlicense = \"CC-BY-4.0\"\n\n[compatibility]\ngame_max = \"2026.10.13.5602\"\n"
+    },
+    {
+      "name": "a vehicle with a loader",
+      "rule": "schema",
+      "accepted": false,
+      "noted": false,
+      "says": "loader: this key is not allowed here",
+      "toml": "spec_version = 1\nid = \"ExampleRover\"\ntype = \"vehicle\"\nname = \"Example Rover\"\nauthors = [\"Example Author\"]\nabstract = \"A six-wheel rover for the Moon.\"\nlicense = \"CC-BY-4.0\"\n\n[loader]\nid = \"StarMap\"\nmin = \"0.4\"\n"
+    },
+    {
+      "name": "a vehicle with an install target",
+      "rule": "schema",
+      "accepted": false,
+      "noted": false,
+      "says": "install.target: this key is not allowed here",
+      "toml": "spec_version = 1\nid = \"ExampleRover\"\ntype = \"vehicle\"\nname = \"Example Rover\"\nauthors = [\"Example Author\"]\nabstract = \"A six-wheel rover for the Moon.\"\nlicense = \"CC-BY-4.0\"\n\n[install]\ntarget = \"user-data\"\n"
+    },
+    {
+      "name": "a vehicle with an install path",
+      "rule": "schema",
+      "accepted": false,
+      "noted": false,
+      "says": "install.path: this key is not allowed here",
+      "toml": "spec_version = 1\nid = \"ExampleRover\"\ntype = \"vehicle\"\nname = \"Example Rover\"\nauthors = [\"Example Author\"]\nabstract = \"A six-wheel rover for the Moon.\"\nlicense = \"CC-BY-4.0\"\n\n[install]\npath = \"Vehicles/Example Rover\"\n"
+    },
+    {
+      "name": "a vehicle with install manages",
+      "rule": "schema",
+      "accepted": false,
+      "noted": false,
+      "says": "install.manages: this key is not allowed here",
+      "toml": "spec_version = 1\nid = \"ExampleRover\"\ntype = \"vehicle\"\nname = \"Example Rover\"\nauthors = [\"Example Author\"]\nabstract = \"A six-wheel rover for the Moon.\"\nlicense = \"CC-BY-4.0\"\n\n[install]\nmanages = [\"vehicle.xml\"]\n"
+    },
+    {
+      "name": "a vehicle with an install folder",
+      "rule": "schema",
+      "accepted": false,
+      "noted": false,
+      "says": "install: Additional properties are not allowed ('folder' was unexpected)",
+      "toml": "spec_version = 1\nid = \"ExampleRover\"\ntype = \"vehicle\"\nname = \"Example Rover\"\nauthors = [\"Example Author\"]\nabstract = \"A six-wheel rover for the Moon.\"\nlicense = \"CC-BY-4.0\"\n\n[install]\nfolder = \"Example Rover\"\n"
+    },
+    {
+      "name": "a vehicle that provides something",
+      "rule": "schema",
+      "accepted": false,
+      "noted": false,
+      "says": "provides: this key is not allowed here",
+      "toml": "spec_version = 1\nid = \"ExampleRover\"\ntype = \"vehicle\"\nname = \"Example Rover\"\nauthors = [\"Example Author\"]\nabstract = \"A six-wheel rover for the Moon.\"\nlicense = \"CC-BY-4.0\"\n\n[provides]\nlaunch = \"x.exe\"\n"
+    },
+    {
+      "name": "a vehicle with the keys of a pack",
+      "rule": "schema",
+      "accepted": false,
+      "noted": false,
+      "says": "mods: this key is not allowed here",
+      "toml": "spec_version = 1\nid = \"ExampleRover\"\ntype = \"vehicle\"\nname = \"Example Rover\"\nauthors = [\"Example Author\"]\nabstract = \"A six-wheel rover for the Moon.\"\nlicense = \"CC-BY-4.0\"\nversion = \"1.0.0\"\nreleased_at = \"2026-10-01T00:00:00Z\"\n\n[[mods]]\nid = \"ExamplePartsMod\"\nversion = \"1.4.0\"\n"
+    },
+    {
+      "name": "a minimal save",
+      "rule": "schema",
+      "accepted": true,
+      "noted": false,
+      "toml": "spec_version = 1\nid = \"ExampleMoonBase\"\ntype = \"save\"\nname = \"Example Moon Base\"\nauthors = [\"Example Author\"]\nabstract = \"A career save with a base on the Moon.\"\nlicense = \"CC-BY-4.0\"\n"
+    },
+    {
+      "name": "a mod without links and compatibility",
+      "rule": "schema",
+      "accepted": false,
+      "noted": false,
+      "says": "the document: 'links' is a required property",
+      "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"MIT\"\ntags = [\"gameplay\"]\n\n[releases]\ngithub = \"example/ExampleMod\"\n"
+    },
+    {
+      "name": "a game_max at the newest build of the game release list",
+      "rule": "game_max",
+      "accepted": true,
+      "noted": true,
+      "says": "compatibility.game_max: '2026.10.13.5602' is the newest game build the index knows, and clients block the content on every build above game_max, so a game_max that only says which build the content was tested with blocks it on the next game update",
+      "game_versions": [
+        "2026.10.7.5541",
+        "2026.10.10.5554",
+        "2026.10.13.5602"
+      ],
+      "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"MIT\"\ntags = [\"gameplay\"]\n\n[releases]\ngithub = \"example/ExampleMod\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\ngame_max = \"2026.10.13.5602\"\n"
+    },
+    {
+      "name": "a game_max below the newest build",
+      "rule": "game_max",
+      "accepted": true,
+      "noted": false,
+      "game_versions": [
+        "2026.10.7.5541",
+        "2026.10.10.5554",
+        "2026.10.13.5602"
+      ],
+      "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"MIT\"\ntags = [\"gameplay\"]\n\n[releases]\ngithub = \"example/ExampleMod\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\ngame_max = \"2026.10.10.5554\"\n"
+    },
+    {
+      "name": "a game_max month is not compared with the newest build",
+      "rule": "game_max",
+      "accepted": true,
+      "noted": false,
+      "game_versions": [
+        "2026.10.7.5541",
+        "2026.10.10.5554",
+        "2026.10.13.5602"
+      ],
+      "toml": "spec_version = 1\nid = \"ExampleMod\"\ntype = \"mod\"\nname = \"Example Mod\"\nauthors = [\"Example Author\"]\nabstract = \"Adds an example to Kitten Space Agency.\"\nlicense = \"MIT\"\ntags = [\"gameplay\"]\n\n[releases]\ngithub = \"example/ExampleMod\"\n\n[links]\nforums = \"https://forums.ahwoo.com/threads/example-mod.123/\"\n\n[compatibility]\ngame_min = \"2026.9.10.5438\"\ngame_max = \"2026.10\"\n"
     }
   ]
 }

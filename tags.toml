@@ -5,42 +5,49 @@ tag = "parts"
 name = "Parts"
 meaning = "New parts, engines and vehicles built from them."
 forum_prefix = "Parts"
+forum_prefix_id = 4
 
 [[mod]]
 tag = "celestial"
 name = "Celestial"
 meaning = "Changes to the star system: new or changed bodies, orbits or whole systems."
 forum_prefix = "Celestial"
+forum_prefix_id = 6
 
 [[mod]]
 tag = "gameplay"
 name = "Gameplay"
 meaning = "Changes to what the player can do or what happens to the vehicle: mechanics, automation, contracts, multiplayer, physics."
 forum_prefix = "Gameplay"
+forum_prefix_id = 9
 
 [[mod]]
 tag = "user-interface"
 name = "User Interface"
 meaning = "Windows, readouts, HUDs and other changes to what the player sees and clicks."
 forum_prefix = "User Interface"
+forum_prefix_id = 8
 
 [[mod]]
 tag = "visual"
 name = "Visual"
 meaning = "Looks without mechanics: models, textures, skins, effects, splash screens."
 forum_prefix = "Visual"
+forum_prefix_id = 11
 
 [[mod]]
 tag = "audio"
 name = "Audio"
 meaning = "Music and sound."
 forum_prefix = "Audio"
+forum_prefix_id = 7
 
 [[mod]]
 tag = "tools"
 name = "Tools"
 meaning = "Tools for modders and for reaching the game from outside: patchers, debug menus, telemetry bridges, editor helpers."
 forum_prefix = "Tools"
+forum_prefix_id = 10
 
 [[mod]]
 tag = "library"

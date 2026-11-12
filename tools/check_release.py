@@ -5,7 +5,12 @@
 The stamper's own error split gives the outcomes: StampError is the release
 being wrong, so reject; HostError is the host being unreachable this run, so
 could-not-evaluate. A pack, a listing with no release host, and a host with no
-release yet all pass.
+release yet all pass. A `tag_prefix` that no release of the repository starts
+with is rejected, because the watcher would never stamp a release. For a
+vehicle or a save, a release whose install folder another listing of that type
+already holds is rejected too (RFC 0085). A share host is read with the tables of
+hosts.toml in this checkout, and the stamper rejects an archive larger than the
+`max_bytes` of its type (RFC 0094).
 """
 
 import argparse
@@ -16,6 +21,12 @@ import tomllib
 import urllib.error
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import ownership
+
+ROOT = Path(__file__).resolve().parent.parent
+
 # The sibling checkout the workflow makes. A local run either has one next to
 # this repository or points at one.
 DEFAULT_RELEASES = Path(__file__).resolve().parent.parent.parent / "content-index-releases"
@@ -24,7 +35,11 @@ PASS = "pass"
 REJECT = "reject"
 COULD_NOT_EVALUATE = "could-not-evaluate"
 
-WATCHED_TYPES = ("mod", "mod-loader")
+WATCHED_TYPES = ("mod", "mod-loader", "vehicle", "save")
+
+# RFC 0085: a release of these types installs one game folder, and no two
+# listings of one type may install into the same folder.
+FOLDER_TYPES = ("vehicle", "save")
 
 
 class Unavailable(Exception):
@@ -32,15 +47,24 @@ class Unavailable(Exception):
 
 
 class Outcome:
-    """What the inspection of one listing came to."""
+    """What the inspection of one listing came to.
 
-    def __init__(self, outcome, messages=()):
+    The summary lines tell the author nothing, so only the job summary shows them.
+    """
+
+    def __init__(self, outcome, messages=(), summary=()):
         self.outcome = outcome
         self.messages = list(messages)
+        self.summary = list(summary)
 
     @property
     def rejected(self):
         return self.outcome == REJECT
+
+
+def releases_root(releases=None):
+    """The checkout of the generated repository."""
+    return Path(releases or os.environ.get("CONTENT_INDEX_RELEASES") or DEFAULT_RELEASES)
 
 
 def load_stamper(releases=None):
@@ -49,7 +73,7 @@ def load_stamper(releases=None):
     Raises Unavailable when the checkout is missing. The caller reports that as
     could-not-evaluate: a missing checkout says nothing about the listing.
     """
-    root = Path(releases or os.environ.get("CONTENT_INDEX_RELEASES") or DEFAULT_RELEASES)
+    root = releases_root(releases)
     tools = root / "tools" if (root / "tools").is_dir() else root
     if not (tools / "stamp_release.py").is_file():
         raise Unavailable(
@@ -70,8 +94,7 @@ def load_stamper(releases=None):
 
 def load_game_versions(releases=None):
     """The game release list an authored month bound resolves against."""
-    root = Path(releases or os.environ.get("CONTENT_INDEX_RELEASES") or DEFAULT_RELEASES)
-    path = root / "game-versions.json"
+    path = releases_root(releases) / "game-versions.json"
     try:
         return json.loads(path.read_text(encoding="utf-8"))["versions"]
     except (OSError, ValueError, KeyError) as error:
@@ -87,20 +110,41 @@ def latest(releases):
     return max(stampable, key=lambda release: (release.release_date or "", release.tag))
 
 
-def inspect(document, stamp_release, hosts, game_versions, http):
-    """Inspect one authored document's latest release."""
+def inspect(document, stamp_release, hosts, game_versions, http, folders=None):
+    """Inspect one authored document's latest release.
+
+    For a vehicle or a save, `folders(content_type)` gives the install folders
+    that the stamped releases of that type hold, as `folder_holders` of the
+    stamper reads them. Without it they are read from the generated repository.
+    """
     content_type = document.get("type")
     if content_type not in WATCHED_TYPES:
         return Outcome(
-            PASS, [f"type '{content_type}' has no release archive, so there is nothing to inspect"]
+            PASS,
+            summary=[f"type '{content_type}' has no release archive, so there is nothing to inspect"],
         )
     if not document.get("releases"):
         return Outcome(PASS, ["the listing names no release host, so releases enter by pull request"])
 
+    # A share host (RFC 0094) needs the type and the tables of hosts.toml, which
+    # only a stamper with `registered` takes.
+    registered = getattr(hosts, "registered", None)
     try:
-        authority, _ = hosts.build(document.get("releases"), http, document.get("id"))
+        if registered is not None:
+            authority, mirrors = hosts.build(
+                document.get("releases"), http, document.get("id"), content_type, registered(ROOT)
+            )
+        elif ownership.share_keys(document.get("releases")):
+            return Outcome(
+                COULD_NOT_EVALUATE,
+                ["the stamper of content-index-releases cannot read a share host yet"],
+            )
+        else:
+            authority, mirrors = hosts.build(document.get("releases"), http, document.get("id"))
     except stamp_release.StampError as error:
         return Outcome(REJECT, [str(error)])
+    except hosts.HostError as error:
+        return Outcome(COULD_NOT_EVALUATE, [f"the share host could not be read: {error}"])
     if authority is None:
         return Outcome(PASS, ["the listing names no release host, so releases enter by pull request"])
 
@@ -111,7 +155,20 @@ def inspect(document, stamp_release, hosts, game_versions, http):
     except (hosts.HostError, urllib.error.HTTPError, OSError) as error:
         return Outcome(COULD_NOT_EVALUATE, [f"{authority.key} could not be read: {error}"])
 
+    # The tag_prefix also applies to a GitHub mirror, so its releases are read only for that.
+    for mirror in mirrors or ():
+        if not getattr(mirror, "tag_prefix", ""):
+            continue
+        try:
+            listed, _ = mirror.releases()
+        except (stamp_release.StampError, hosts.HostError, urllib.error.HTTPError, OSError) as error:
+            return Outcome(COULD_NOT_EVALUATE, [f"{mirror.key} could not be read: {error}"])
+        if not listed and getattr(mirror, "skipped", 0):
+            return Outcome(REJECT, [unmatched(mirror)])
+
     if not offered:
+        if getattr(authority, "skipped", 0):
+            return Outcome(REJECT, [unmatched(authority)])
         return Outcome(PASS, [f"{authority.key} has no release yet"])
 
     release = latest(offered)
@@ -120,21 +177,71 @@ def inspect(document, stamp_release, hosts, game_versions, http):
             REJECT,
             [
                 f"{authority.key} offers {len(offered)} release(s) and none of them carries a "
-                "version that parses as SemVer 2.0.0, so nothing can ever be stamped"
+                "version the index can read, such as 1.2.3 or 0.5, so nothing can ever be stamped"
             ],
         )
 
+    holders, notes, more = None, [], {}
+    if content_type in FOLDER_TYPES:
+        if not hasattr(stamp_release, "check_folder"):
+            return Outcome(
+                COULD_NOT_EVALUATE,
+                [f"the stamper of content-index-releases cannot stamp a {content_type} yet"],
+            )
+        try:
+            holders = (folders or _stamped_folders(stamp_release))(content_type)
+        except stamp_release.StampError as error:
+            return Outcome(
+                COULD_NOT_EVALUATE,
+                [f"the install folders of the other {content_type} listings could not be read: {error}"],
+            )
+        more = {"notes": notes}
+
+    # The explanation reads the asset names from the tag without its prefix.
+    prefix = getattr(release, "tag_prefix", "")
+    named = f"{release.tag} (tag_prefix `{prefix}`)" if prefix else release.tag
     try:
         archive, content = authority.download(release)
         facts = release.facts()
         facts["content_type"] = content
-        stamp_release.stamp(document, facts, archive, game_versions)
+        stamped = stamp_release.stamp(document, facts, archive, game_versions, **more)
+        if holders is not None:
+            stamp_release.check_folder(stamped, holders)
     except stamp_release.StampError as error:
-        return Outcome(REJECT, [f"the latest release {release.tag} cannot be stamped: {error}"])
+        return Outcome(REJECT, [f"the latest release {named} cannot be stamped: {error}"])
     except (hosts.HostError, urllib.error.HTTPError, OSError) as error:
-        return Outcome(COULD_NOT_EVALUATE, [f"the latest release {release.tag} could not be read: {error}"])
+        return Outcome(COULD_NOT_EVALUATE, [f"the latest release {named} could not be read: {error}"])
 
-    return Outcome(PASS, [f"the latest release {release.version} stamps cleanly"])
+    folder = (stamped.get("install") or {}).get("folder") if holders is not None else None
+    if isinstance(folder, str):
+        # As the watcher does after a stamp, so another document of this run
+        # cannot take the same folder.
+        holding = holders.setdefault(folder.lower(), [])
+        if stamped.get("id") not in holding:
+            holding.append(stamped.get("id"))
+
+    return Outcome(PASS, [f"the latest release {release.version} stamps cleanly", *notes])
+
+
+def _stamped_folders(stamp_release, releases=None):
+    """The install folders by type, read once per type from the generated repository."""
+    folder = releases_root(releases) / "releases"
+    read = {}
+
+    def folders(content_type):
+        if content_type not in read:
+            read[content_type] = stamp_release.folder_holders(folder, content_type)
+        return read[content_type]
+
+    return folders
+
+
+def unmatched(host):
+    """The rejection of a GitHub host whose tag_prefix starts the tag of none of its releases."""
+    return (
+        f"{host.key} has {host.skipped} release(s) and the tag of none of them starts "
+        f"with the tag_prefix `{host.tag_prefix}`, so nothing can ever be stamped"
+    )
 
 
 def inspect_paths(paths, releases=None, token=None):
@@ -142,6 +249,7 @@ def inspect_paths(paths, releases=None, token=None):
     stamp_release, hosts = load_stamper(releases)
     game_versions = load_game_versions(releases)
     http = hosts.Http(token=token or os.environ.get("GITHUB_TOKEN"))
+    folders = _stamped_folders(stamp_release, releases)
 
     results = {}
     for path in paths:
@@ -149,14 +257,17 @@ def inspect_paths(paths, releases=None, token=None):
             with Path(path).open("rb") as handle:
                 document = tomllib.load(handle)
         except FileNotFoundError:
-            results[str(path)] = Outcome(PASS, ["not inspected, the document is not there"])
+            results[str(path)] = Outcome(PASS, summary=["not inspected, the document is not there"])
             continue
         except (tomllib.TOMLDecodeError, OSError) as error:
-            results[str(path)] = Outcome(PASS, [f"not inspected, the document does not parse: {error}"])
+            # The schema check reports a document that does not parse.
+            results[str(path)] = Outcome(
+                PASS, summary=[f"not inspected, the document does not parse: {error}"]
+            )
             continue
 
         try:
-            results[str(path)] = inspect(document, stamp_release, hosts, game_versions, http)
+            results[str(path)] = inspect(document, stamp_release, hosts, game_versions, http, folders)
         except Exception as error:
             results[str(path)] = Outcome(
                 COULD_NOT_EVALUATE, [f"the stamper behaved unexpectedly: {error!r}"]
@@ -178,7 +289,7 @@ def main(argv=None):
 
     rejected = 0
     for path, outcome in sorted(results.items()):
-        for message in outcome.messages:
+        for message in outcome.messages + outcome.summary:
             print(f"{path}: {outcome.outcome}: {message}")
         rejected += outcome.rejected
 

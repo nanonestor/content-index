@@ -6,12 +6,14 @@ import json
 import re
 from pathlib import PurePosixPath
 
+import check_scope
 import ownership
 
 OWNER_FILE = "owner.json"
 PROOF = "pack owner record"
 OWNER_KEYS = {"github_login", "github_id"}
-LOGIN = re.compile(r"^(?!.*--)[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
+# An owner record path that is safe to put into a URL and into Markdown.
+OWNER_RECORD = re.compile(r"packs/[A-Za-z0-9._-]+/owner\.json")
 
 
 def _unique_object(pairs):
@@ -46,11 +48,57 @@ def parse_record(text, where):
 
     login = record["github_login"]
     account_id = record["github_id"]
-    if not isinstance(login, str) or not LOGIN.fullmatch(login):
+    if not isinstance(login, str) or not ownership.LOGIN.fullmatch(login):
         return None, f"{where}: github_login is not a valid GitHub login"
     if isinstance(account_id, bool) or not isinstance(account_id, int) or account_id < 1:
         return None, f"{where}: github_id must be a positive integer"
     return record, ""
+
+
+def record_text(login, account_id):
+    """An owner record written as the files in packs/ are."""
+    return json.dumps({"github_login": login, "github_id": account_id}, indent=2) + "\n"
+
+
+def held_ids(api, ref):
+    """The ids that the pack folders and the listing, vehicle and save files on
+    `ref` hold, folded as check_index compares them."""
+    held = set()
+    for name, kind in api.folder("packs", ref):
+        if kind == "dir":
+            held.add(name.casefold())
+    for folder in ("listings", "vehicles", "saves"):
+        for name, kind in api.folder(folder, ref):
+            if kind == "file" and name.lower().endswith(".toml"):
+                held.add(name[: -len(".toml")].casefold())
+    return held
+
+
+def missing_records(api, pull, changes):
+    """The owner records that the first pack claims of a change still lack.
+
+    A pack counts when the change adds a version of it, the change has no
+    record for it, and no pack or listing on the base branch holds its id in
+    any case. Only a plain path counts, because the path comes from the pull
+    request. A base branch that cannot be read holds every id, so nobody is
+    asked for a file that may be there.
+    """
+    base_ref = (pull.get("base") or {}).get("ref") or ""
+    submitted = {change.path for change in changes if change.status in check_scope.WRITING}
+    wanted = []
+    for change in changes:
+        if change.status != "added" or check_scope.kind_of(change.path) != check_scope.PACK_KIND:
+            continue
+        path = owner_path(change.path)
+        if OWNER_RECORD.fullmatch(path) and path not in submitted and path not in wanted:
+            wanted.append(path)
+    if not wanted or not base_ref:
+        return []
+    try:
+        held = held_ids(api, base_ref)
+    except ownership.Unavailable:
+        return []
+    return [path for path in wanted if PurePosixPath(path).parent.name.casefold() not in held]
 
 
 def _read(api, path, ref):
@@ -63,11 +111,26 @@ def _read(api, path, ref):
     return parse_record(text, path)
 
 
+def owner_record(api, pack_id, ref):
+    """The accepted owner record of a pack on `ref`, as (record, reason).
+
+    A pack without a record has no owner yet, which is not a failure, so both
+    are None. A record that cannot be read comes with the reason.
+    """
+    path = f"packs/{pack_id}/{OWNER_FILE}"
+    if not OWNER_RECORD.fullmatch(path):
+        return None, "the pack id is not one a path can carry"
+    record, problem = _read(api, path, ref)
+    return record, problem or None
+
+
 def verify(api, pull, document_path, head_sha):
     """Verify a pack version against the owner recorded on the base branch.
 
-    A submitted owner record can describe a first claim, but it can never
-    verify that claim. A steward must accept it before it becomes authority.
+    A pack version is a first claim only when no pack or listing on the base
+    branch holds its id in any case. Then the submitted owner record claims the
+    id for the account that opened the pull request, first come, first served.
+    After that, only the record on the base branch counts.
     """
     base_ref = (pull.get("base") or {}).get("ref") or ""
     if not base_ref:
@@ -105,6 +168,22 @@ def verify(api, pull, document_path, head_sha):
             instructions="A steward decides whether the recorded pack owner must change.",
         )
 
+    pack_id = PurePosixPath(document_path).parent.name
+    try:
+        held = held_ids(api, base_ref)
+    except ownership.Unavailable as error:
+        return ownership.Result(
+            ownership.COULD_NOT_EVALUATE,
+            f"whether the pack id is free on {base_ref} could not be read: {error}",
+        )
+    if pack_id.casefold() in held:
+        return ownership.Result(
+            ownership.UNVERIFIED,
+            f"the id '{pack_id}' is already held on {base_ref}, and no owner record "
+            "there names the account that may add a version",
+            instructions="A steward decides who holds the pack id.",
+        )
+
     submitted, problem = _read(api, path, head_sha)
     if problem:
         return ownership.Result(ownership.REJECTED, problem)
@@ -118,8 +197,4 @@ def verify(api, pull, document_path, head_sha):
             ownership.REJECTED,
             f"{path} must name the account that opened the pull request",
         )
-    return ownership.Result(
-        ownership.UNVERIFIED,
-        "this is the first claim for the pack id",
-        instructions="Packs have no release host, so a steward must accept the first claim.",
-    )
+    return ownership.Result(ownership.VERIFIED, "", PROOF)

@@ -13,18 +13,22 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import check_images
 import check_index
+import check_layout
 import check_license
 import check_schema
 import check_tags
 import page_licenses
 
 VECTORS = Path(__file__).resolve().parent.parent / "schemas" / "vectors.json"
-RULES = {"schema", "id", "bounds", "license", "tags", "images", "abstract"}
+SITE_FIXTURES = Path(__file__).resolve().parent.parent / "site" / "test" / "fixtures"
+RULES = {"schema", "id", "bounds", "license", "tags", "images", "abstract", "game_max"}
+# The rules that only give notes, so no vector of them is rejected.
+NOTE_RULES = {"abstract", "game_max"}
 WHERE = "vector"
 
 
-def run(text, validator, vocabulary):
-    """The errors and notes of the checks that need nothing but the document."""
+def run(text, validator, vocabulary, game_versions=None):
+    """The errors and notes of the checks that need the document and at most the game release list."""
     document = check_schema.normalise(tomllib.loads(text))
     errors = []
     notes = []
@@ -34,6 +38,8 @@ def run(text, validator, vocabulary):
     notes.extend(check_tags.check_document(Path(WHERE), document, vocabulary))
     entry = check_index.Entry(Path(WHERE), WHERE, ("listing", WHERE), str(document.get("id")), document)
     notes.extend(check_index.check_abstracts([entry], {WHERE}))
+    if game_versions is not None:
+        notes.extend(check_index.game_max_notes(check_index.bounded([entry], {WHERE}), game_versions))
     return errors, notes
 
 
@@ -54,20 +60,48 @@ class Vectors(unittest.TestCase):
                 self.assertIn(vector["rule"], RULES)
                 self.assertIsInstance(vector["accepted"], bool)
                 self.assertIsInstance(vector["noted"], bool)
+                self.assertIsInstance(vector.get("game_versions", []), list)
 
     def test_every_rule_has_an_accepted_and_a_rejected_vector(self):
-        for rule in RULES - {"abstract"}:
+        for rule in RULES - NOTE_RULES:
             outcomes = {vector["accepted"] for vector in self.vectors if vector["rule"] == rule}
             self.assertEqual(outcomes, {True, False}, rule)
 
     def test_the_checks_agree_with_each_vector(self):
         for vector in self.vectors:
             with self.subTest(vector["name"]):
-                errors, notes = run(vector["toml"], self.validator, self.vocabulary)
-                self.assertEqual(not errors, vector["accepted"], errors)
+                errors, notes = run(
+                    vector["toml"], self.validator, self.vocabulary, vector.get("game_versions")
+                )
                 self.assertEqual(bool(notes), vector["noted"], notes)
+                self.assertEqual(not errors, vector["accepted"], errors)
                 if "says" in vector:
                     self.assertTrue(any(vector["says"] in line for line in errors + notes), errors + notes)
+
+
+class PageDocuments(unittest.TestCase):
+    """site/test/pack.test.js and model.test.js write these files from a form."""
+
+    def test_the_layout_accepts_what_the_page_writes(self):
+        packs = SITE_FIXTURES / "packs"
+        self.assertEqual(check_layout.check(SITE_FIXTURES / "listings", packs), [])
+        self.assertEqual(check_layout.counted(SITE_FIXTURES / "listings", packs), 2)
+
+    def test_the_schema_accepts_the_vehicle_the_page_writes(self):
+        path = SITE_FIXTURES / "vehicles" / "ExampleRover.toml"
+        where = "vehicles/ExampleRover.toml"
+        document = check_schema.normalise(tomllib.loads(path.read_text(encoding="utf-8")))
+        errors = []
+        check_schema.check_parsed(where, document, check_schema.validator(), errors)
+        self.assertEqual(errors, [])
+
+    def test_the_checks_accept_the_pack_the_page_writes(self):
+        packs = SITE_FIXTURES / "packs"
+        path = packs / "ExamplePack" / "1.0.0.toml"
+        document = check_schema.normalise(tomllib.loads(path.read_text(encoding="utf-8")))
+        errors = []
+        check_schema.check_parsed(WHERE, document, check_schema.validator(), errors)
+        self.assertEqual(errors, [])
 
 
 class PageLicenses(unittest.TestCase):

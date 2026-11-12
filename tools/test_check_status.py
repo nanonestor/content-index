@@ -180,6 +180,18 @@ class Resolves(StatusCase):
         errors = self.errors(block(id="AutoStge", state="delisted"))
         self.assertTrue(any("neither a listing nor a pack" in error for error in errors))
 
+    def test_a_state_for_a_vehicle_or_a_save_resolves(self):
+        self.vehicle("Rover")
+        self.vehicle("Base", "save")
+        self.assertEqual(
+            self.errors(block(id="rover", state="delisted") + block(id="Base", state="disputed")), []
+        )
+
+    def test_retracting_a_vehicle_is_rejected(self):
+        self.vehicle("Rover")
+        errors = self.errors(block(id="Rover", state="retracted", version="1.0.0"))
+        self.assertTrue(any("'Rover' is not a pack" in error for error in errors), errors)
+
     def test_retracting_a_listing_is_rejected(self):
         self.listing("AutoStage")
         errors = self.errors(block(id="AutoStage", state="retracted", version="1.0.0"))
@@ -194,6 +206,25 @@ class Resolves(StatusCase):
         self.pack("Pack", version="1.0.0")
         self.pack("Pack", version="1.1.0")
         self.assertEqual(self.errors(block(id="Pack", state="retracted", version="1.1.0")), [])
+
+
+class Delisted(StatusCase):
+    def test_only_delisted_ids_are_read_casefolded(self):
+        path = self.entries(
+            block(id="Gone", state="delisted"),
+            block(id="Argued", state="disputed"),
+            block(id="Pack", state="retracted", version="1.0.0"),
+        )
+        self.assertEqual(check_status.delisted(path), {"gone"})
+        self.assertEqual(check_status.disputed(path), {"argued"})
+        self.assertEqual(check_status.disputed(self.root / "absent.toml"), set())
+
+    def test_no_status_file_delists_nothing(self):
+        self.assertEqual(check_status.delisted(self.root / "absent.toml"), set())
+
+    def test_a_file_that_does_not_parse_raises(self):
+        with self.assertRaises(ValueError):
+            check_status.delisted(self.status("entries = ["))
 
 
 class Schema(unittest.TestCase):

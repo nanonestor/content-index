@@ -14,8 +14,10 @@ TAGS = ROOT / "tags.toml"
 
 SPEC_VERSION = 1
 TAG_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
-CONTENT_TYPES = {"mod": "mod", "mod-loader": "mod", "modpack": "mod"}
-ENTRY_KEYS = {"tag", "name", "meaning", "forum_prefix"}
+# RFC 0085 keeps the tags of a vehicle or a save free-form until spec/tags.md
+# lists some for them, so they get no note.
+CONTENT_TYPES = {"mod": "mod", "mod-loader": "mod", "modpack": "mod", "vehicle": None, "save": None}
+ENTRY_KEYS = {"tag", "name", "meaning", "forum_prefix", "forum_prefix_id"}
 REQUIRED_ENTRY_KEYS = {"tag", "name", "meaning"}
 SPEC_URL = "https://github.com/KSAModding/content-manager-design/blob/main/spec/tags.md"
 
@@ -50,6 +52,7 @@ def _check_entries(where, content_type, entries, vocabulary, errors):
 
     curated = []
     seen = set()
+    prefix_ids = set()
     vocabulary[content_type] = curated
     for position, entry in enumerate(entries):
         location = f"{where}: {content_type}[{position}]"
@@ -77,6 +80,22 @@ def _check_entries(where, content_type, entries, vocabulary, errors):
             value = entry.get(key)
             if value is not None and (not isinstance(value, str) or not value.strip()):
                 errors.append(f"{location}: '{key}' must be a non-empty string")
+
+        if "forum_prefix_id" in entry:
+            _check_prefix_id(location, entry, prefix_ids, errors)
+
+
+def _check_prefix_id(location, entry, prefix_ids, errors):
+    if "forum_prefix" not in entry:
+        errors.append(f"{location}: 'forum_prefix_id' needs 'forum_prefix'")
+
+    prefix_id = entry["forum_prefix_id"]
+    if type(prefix_id) is not int or prefix_id < 1:
+        errors.append(f"{location}: 'forum_prefix_id' must be a positive integer")
+    elif prefix_id in prefix_ids:
+        errors.append(f"{location}: forum_prefix_id {prefix_id} is already defined")
+    else:
+        prefix_ids.add(prefix_id)
 
 
 def check_document(path, document, vocabulary):

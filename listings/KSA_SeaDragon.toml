@@ -1,0 +1,27 @@
+spec_version = 1
+id = "KSA_SeaDragon"
+type = "mod"
+name = "Sea Dragon"
+authors = ["Spaceman_3D"]
+abstract = "Adds the Sea Dragon Rocket to KSA"
+license = "GPL-3.0"
+tags = ["parts"]
+
+[releases]
+github = "Spaceman3d/KSA-Mods"
+spacedock = 4593
+authority = "spacedock"
+
+[links]
+forums = "https://forums.ahwoo.com/forums/kitten-space-agency/mod-releases/sea-dragon.1263/"
+spacedock = "https://spacedock.info/mod/4593/Sea%20Dragon"
+
+[compatibility]
+game_min = "2026.9.22.5482"
+
+[images.icon]
+url = "https://raw.githubusercontent.com/Spaceman3d/KSA-Mods/refs/heads/main/Screenshot%202026-09-26%20120749.jpg"
+sha256 = "88305f1d5ab5f42c9b2f71f0ba2e065e382bd9a7f324dd11c66cfc021776bf40"
+width = 431
+height = 431
+size = 24827

@@ -2,10 +2,11 @@
 # SPDX-License-Identifier: MIT
 """Check that every authored document sits where its type says it belongs.
 
-RFC 0033 keeps listings and packs in separate folders, and the id and version a
-document declares are the path it lives at. This check enforces that agreement
-in both directions. Everything else about a document, the schema and the id
-rules, is the validation workflow's job.
+RFC 0033 keeps listings and packs in separate folders, RFC 0085 adds one folder
+each for vehicles and saves, and the id and version a document declares are the
+path it lives at. This check enforces that agreement in both directions.
+Everything else about a document, the schema and the id rules, is the
+validation workflow's job.
 """
 
 import sys
@@ -16,7 +17,16 @@ ROOT = Path(__file__).resolve().parent.parent
 LISTINGS = ROOT / "listings"
 PACKS = ROOT / "packs"
 
-LISTING_TYPES = ("mod", "mod-loader")
+# The folders that hold one document per listing, and the types each holds.
+FOLDERS = {
+    "listings": ("mod", "mod-loader"),
+    "vehicles": ("vehicle",),
+    "saves": ("save",),
+}
+# What one document in each folder is, for the message about a subfolder.
+DOCUMENT = {"listings": "listing", "vehicles": "vehicle", "saves": "save"}
+
+LISTING_TYPES = FOLDERS["listings"]
 PACK_TYPE = "modpack"
 
 
@@ -54,19 +64,36 @@ def check_suffix(path, where, errors):
         errors.append(f"{where}: the file name has to end in '.toml', in lowercase")
 
 
-def check_listing(path, where, errors):
+def missing(where, key, wanted):
+    """The message for a key the document does not have, with the line to write."""
+    return f"{where}: {key} is missing; write {wanted}"
+
+
+def home(declared):
+    """The listing folder that holds the type `declared`, or None."""
+    return next((folder for folder, types in FOLDERS.items() if declared in types), None)
+
+
+def check_listing(path, where, errors, folder="listings"):
     document = load(path, where, errors)
     if document is None:
         return
 
+    types = FOLDERS[folder]
     declared = document.get("type")
-    if declared == PACK_TYPE:
+    if declared is None:
+        errors.append(missing(where, "type", ' or '.join(f'type = "{kind}"' for kind in types)))
+    elif declared == PACK_TYPE:
         errors.append(f"{where}: type '{PACK_TYPE}' belongs under packs/<id>/<version>.toml")
-    elif declared not in LISTING_TYPES:
-        errors.append(f"{where}: type '{declared}' is not one of {', '.join(LISTING_TYPES)}")
+    elif home(declared) not in (None, folder):
+        errors.append(f"{where}: type '{declared}' belongs under {home(declared)}/<id>.toml")
+    elif declared not in types:
+        errors.append(f"{where}: type '{declared}' is not one of {', '.join(types)}")
 
     identifier = document.get("id")
-    if identifier != path.stem:
+    if identifier is None:
+        errors.append(missing(where, "id", f'id = "{path.stem}", the same as the file name'))
+    elif identifier != path.stem:
         if isinstance(identifier, str):
             errors.append(f"{where}: declares id '{identifier}', so the file name must be '{identifier}.toml'")
         else:
@@ -79,22 +106,38 @@ def check_pack(path, where, errors):
         return
 
     declared = document.get("type")
-    if declared in LISTING_TYPES:
-        errors.append(f"{where}: type '{declared}' belongs under listings/<id>.toml")
+    if declared is None:
+        errors.append(missing(where, "type", f'type = "{PACK_TYPE}"'))
+    elif home(declared) is not None:
+        errors.append(f"{where}: type '{declared}' belongs under {home(declared)}/<id>.toml")
     elif declared != PACK_TYPE:
         errors.append(f"{where}: type '{declared}' is not '{PACK_TYPE}'")
 
+    folder = path.parent.name
     identifier = document.get("id")
-    if identifier != path.parent.name:
-        errors.append(f"{where}: declares id '{identifier}', the folder says '{path.parent.name}'")
+    if identifier is None:
+        errors.append(missing(where, "id", f'id = "{folder}", the same as the folder name'))
+    elif identifier != folder:
+        errors.append(f"{where}: declares id '{identifier}', the folder says '{folder}'")
 
     version = document.get("version")
-    if version != path.stem:
+    if version is None:
+        errors.append(missing(where, "version", f'version = "{path.stem}", the same as the file name'))
+    elif version != path.stem:
         errors.append(f"{where}: declares version '{version}', the file name says '{path.stem}'")
 
 
-def check(listings=LISTINGS, packs=PACKS):
-    """Every layout rule. Paths are reported relative to the folder holding both."""
+def listing_folders(listings, vehicles=None, saves=None):
+    """Each listing folder by its name. A folder not given is the sibling of `listings`."""
+    return {
+        "listings": listings,
+        "vehicles": vehicles or listings.parent / "vehicles",
+        "saves": saves or listings.parent / "saves",
+    }
+
+
+def check(listings=LISTINGS, packs=PACKS, vehicles=None, saves=None):
+    """Every layout rule. Paths are reported relative to the folder holding them all."""
     errors = []
     base = listings.parent
 
@@ -104,12 +147,13 @@ def check(listings=LISTINGS, packs=PACKS):
         except ValueError:
             return path.as_posix()
 
-    for path in toml_files(listings):
-        check_suffix(path, where(path), errors)
-        if path.parent != listings:
-            errors.append(f"{where(path)}: listings/ holds no subfolders, one document per listing")
-            continue
-        check_listing(path, where(path), errors)
+    for name, folder in listing_folders(listings, vehicles, saves).items():
+        for path in toml_files(folder):
+            check_suffix(path, where(path), errors)
+            if path.parent != folder:
+                errors.append(f"{where(path)}: {name}/ holds no subfolders, one document per {DOCUMENT[name]}")
+                continue
+            check_listing(path, where(path), errors, name)
 
     for path in toml_files(packs):
         check_suffix(path, where(path), errors)
@@ -121,11 +165,12 @@ def check(listings=LISTINGS, packs=PACKS):
     return errors
 
 
-def counted(listings=LISTINGS, packs=PACKS):
+def counted(listings=LISTINGS, packs=PACKS, vehicles=None, saves=None):
     """How many documents sit at the depth the layout puts them at."""
+    folders = [(folder, 1) for folder in listing_folders(listings, vehicles, saves).values()]
     at_depth = [
         path
-        for folder, depth in ((listings, 1), (packs, 2))
+        for folder, depth in folders + [(packs, 2)]
         for path in toml_files(folder)
         if len(path.relative_to(folder).parts) == depth
     ]

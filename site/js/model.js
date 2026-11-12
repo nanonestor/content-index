@@ -3,8 +3,17 @@ import { RECORD_KEYS } from "./images.js";
 export const PLATFORMS = ["windows", "linux", "macos"];
 export const KINDS = ["required", "optional", "recommends", "suggests", "conflict"];
 export const ANCHORS = ["mods", "user-data", "game-root", "standalone"];
-const FIXED_LINKS = ["forums", "repository", "bugtracker"];
-const LINK_ORDER = ["forums", "repository", "spacedock", "bugtracker"];
+export const TYPES = ["mod", "mod-loader", "modpack", "vehicle", "save"];
+const SHARE_TYPES = ["vehicle", "save"];
+// The pack sections in the order the form lists their members. A row without a
+// section is a mod.
+const PINNED_SECTIONS = ["mods", "vehicles", "saves"];
+const PACK_KEYS = ["version", "released_at", "changelog", ...PINNED_SECTIONS];
+const NOT_IN_PACK = ["releases", "loader", "dependencies", "install", "provides"];
+// The keys of [releases] the form has fields for. Any other names a share host (RFC 0094).
+const RELEASE_KEYS = ["github", "spacedock", "authority", "tag_prefix", "since"];
+const FIXED_LINKS = ["forums", "homepage", "repository", "spacedock", "bugtracker", "discussions"];
+const LINK_ORDER = FIXED_LINKS;
 
 function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -12,6 +21,12 @@ function isObject(value) {
 
 function text(value) {
   return value === undefined || value === null ? "" : String(value);
+}
+
+// Every standard key has its own field, so an extra link that repeats one is
+// left out of the written file and the page asks the author to remove the row.
+export function isFixedLink(key) {
+  return FIXED_LINKS.includes(trimmed(key));
 }
 
 export function emptyRecord(withId) {
@@ -26,12 +41,15 @@ export function emptyForm() {
     github: "",
     spacedock: "",
     authority: "",
+    tagPrefix: "",
+    since: "",
+    shareHosts: [],
     name: "",
     authors: "",
     abstract: "",
     description: "",
     license: "",
-    links: { forums: "", repository: "", bugtracker: "" },
+    links: Object.fromEntries(FIXED_LINKS.map((key) => [key, ""])),
     extraLinks: [],
     gameMin: "",
     gameMax: "",
@@ -48,7 +66,45 @@ export function emptyForm() {
     contentDir: "",
     contentPath: "",
     platforms: Object.fromEntries(PLATFORMS.map((name) => [name, { launch: "", runtime: "" }])),
+    version: "",
+    releasedAt: "",
+    changelog: "",
+    members: [],
   };
+}
+
+// The sections of the page that apply to each type. The form keeps the values
+// of a hidden section, so a type switched back finds them again.
+export function sectionsOf(type) {
+  const pack = type === "modpack";
+  return {
+    releases: !pack,
+    loader: type === "mod",
+    launch: type === "mod-loader",
+    dependencies: !pack,
+    pack,
+    members: pack,
+    share: SHARE_TYPES.includes(type),
+  };
+}
+
+// The types the deployed schema accepts. A type the schema lists under `not`
+// is not offered, so a new type can arrive behind such a gate with no change here.
+export function typeChoices(schema) {
+  const type = schema && schema.properties ? schema.properties.type : null;
+  const known = type && Array.isArray(type.enum) ? type.enum : [];
+  const gated = type && type.not && Array.isArray(type.not.enum) ? type.not.enum : [];
+  return TYPES.filter((name) => known.includes(name) && !gated.includes(name));
+}
+
+// The word the page uses for what is listed, so a text visible for every type fits the chosen one.
+export function nounOf(type) {
+  if (SHARE_TYPES.includes(type)) return type;
+  return type === "modpack" ? "pack" : type === "mod-loader" ? "mod loader" : "mod";
+}
+
+export function releaseTime(date = new Date()) {
+  return date.toISOString().replace(/\.[0-9]+Z$/, "Z");
 }
 
 function recordForm(record, withId) {
@@ -60,11 +116,16 @@ function recordForm(record, withId) {
 export function formFromDocument(document) {
   const form = emptyForm();
   form.id = text(document.id);
-  form.type = document.type === "mod-loader" ? "mod-loader" : "mod";
+  form.type = TYPES.includes(document.type) ? document.type : "mod";
   const releases = isObject(document.releases) ? document.releases : {};
   form.github = text(releases.github);
   form.spacedock = text(releases.spacedock);
   form.authority = text(releases.authority);
+  form.tagPrefix = text(releases.tag_prefix);
+  form.since = text(releases.since);
+  form.shareHosts = Object.keys(releases)
+    .filter((key) => !RELEASE_KEYS.includes(key))
+    .map((key) => ({ key, id: text(releases[key]) }));
   form.name = text(document.name);
   form.authors = Array.isArray(document.authors) ? document.authors.map(text).join(", ") : "";
   form.abstract = text(document.abstract);
@@ -103,6 +164,11 @@ export function formFromDocument(document) {
     const entry = isObject(platforms[name]) ? platforms[name] : {};
     form.platforms[name] = { launch: text(entry.launch), runtime: text(entry.runtime) };
   }
+  form.version = text(document.version);
+  form.releasedAt = text(document.released_at);
+  form.changelog = text(document.changelog);
+  form.members = PINNED_SECTIONS.flatMap((section) => (Array.isArray(document[section]) ? document[section] : []).map((entry) =>
+    isObject(entry) ? { id: text(entry.id), version: text(entry.version), section } : { kept: entry, section }));
   return form;
 }
 
@@ -132,6 +198,15 @@ export function recordFromForm(form) {
   return record;
 }
 
+// The hosts that the written [releases] names.
+export function namedHosts(form) {
+  return [
+    ...(trimmed(form.github) ? ["github"] : []),
+    ...(trimmed(form.spacedock) ? ["spacedock"] : []),
+    ...(form.shareHosts || []).filter((share) => trimmed(share.id)).map((share) => share.key),
+  ];
+}
+
 export function documentFromForm(form, base) {
   const document = base ? structuredClone(base) : {};
   set(document, "spec_version", document.spec_version ?? 1);
@@ -148,12 +223,39 @@ export function documentFromForm(form, base) {
   const releases = {};
   set(releases, "github", trimmed(form.github));
   set(releases, "spacedock", integerOr(form.spacedock));
-  set(releases, "authority", releases.github !== undefined && releases.spacedock !== undefined ? trimmed(form.authority) : "");
+  // A share host key is edited on the host, so the page keeps it as it was read.
+  for (const share of form.shareHosts || []) set(releases, share.key, trimmed(share.id));
+  const hosts = namedHosts(form).length;
+  set(releases, "authority", hosts > 1 ? trimmed(form.authority) : "");
+  // tag_prefix picks releases by their GitHub tag, so it is written only next to github.
+  set(releases, "tag_prefix", releases.github !== undefined ? trimmed(form.tagPrefix) : "");
+  // since picks releases of a host, so it is written only next to one.
+  set(releases, "since", hosts ? trimmed(form.since) : "");
   set(document, "releases", releases);
+
+  if (form.type === "modpack") {
+    set(document, "version", trimmed(form.version));
+    set(document, "released_at", trimmed(form.releasedAt));
+    set(document, "changelog", text(form.changelog).trim() ? text(form.changelog) : "");
+    const members = Object.fromEntries(PINNED_SECTIONS.map((section) => [section, []]));
+    for (const entry of form.members) {
+      const pinned = members[entry.section] || members.mods;
+      if (entry.kept !== undefined) {
+        pinned.push(entry.kept);
+        continue;
+      }
+      if (!trimmed(entry.id)) continue;
+      const member = {};
+      set(member, "id", trimmed(entry.id));
+      set(member, "version", trimmed(entry.version));
+      pinned.push(member);
+    }
+    for (const section of PINNED_SECTIONS) set(document, section, members[section]);
+  }
 
   const wanted = new Map(FIXED_LINKS.map((key) => [key, trimmed(form.links[key])]));
   for (const { key, url } of form.extraLinks) {
-    if (trimmed(key)) wanted.set(trimmed(key), trimmed(url));
+    if (trimmed(key) && !isFixedLink(key)) wanted.set(trimmed(key), trimmed(url));
   }
   const order = base && isObject(base.links) ? Object.keys(base.links) : LINK_ORDER;
   const links = {};
@@ -217,5 +319,6 @@ export function documentFromForm(form, base) {
     set(provides, "platform", platforms);
     set(document, "provides", provides);
   }
+  for (const key of form.type === "modpack" ? NOT_IN_PACK : PACK_KEYS) delete document[key];
   return document;
 }

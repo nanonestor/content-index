@@ -1,0 +1,51 @@
+spec_version = 1
+id = "MacOSMoltenPatcher"
+type = "mod"
+name = "macOS Molten Patcher"
+authors = ["Beik"]
+abstract = "Kitten Space Agency mod that makes the Windows game run on macOS in a Sikarugir (Wine) wrapper"
+description = """
+## ⚠️ Warning
+
+- Only for macOS users running KSA inside a **Sikarugir** wrapper. Tested with KSA 2026.10.13.5602 on engine WS12WineSikarugir11.0_1.
+- This is a highly experimental project. Proceed with caution.
+- macOS is still not officially supported. Leave the devs alone.
+
+---
+
+A Kitten Space Agency mod that lets the Windows version of the game run on macOS in a Sikarugir (Wine) wrapper. A StarMap hook runs it before the game starts. It applies the patches in its `patches/` folder to the wrapper and the game files.
+
+## How it works
+
+Each patch is a plain text file: a title, an explanation of why it exists and when it can be removed, a --- line, then the change itself. There are two kinds:
+
+.patch: a diff of one text file, as git diff prints it. Lines are matched by their text, not by line numbers, so a patch survives small changes to the file around it.
+.replace: a whole file, for binaries. It names the target and lists the shell commands that build the new file (build.sh runs them); the built file ships in files/.
+The target is a path inside the game folder, or inside the wrapper's Contents folder when it starts with wrapper:. Patches cannot reach anywhere else.
+
+You can see the current list of patches in the Github repository or inside the mod patches/ folder. For more info, check the repo.
+"""
+license = "MIT"
+tags = ["tools"]
+
+[releases]
+github = "renancamm/ksa-macos-molten-patcher"
+
+[links]
+forums = "https://forums.ahwoo.com/forums/kitten-space-agency/mod-releases/macos-molten-patcher.1310/"
+repository = "https://github.com/renancamm/ksa-macos-molten-patcher"
+bugtracker = "https://github.com/renancamm/ksa-macos-molten-patcher/issues"
+
+[compatibility]
+game_min = "2026.10.13.5602"
+
+[loader]
+id = "StarMap"
+min = "0.4.7"
+
+[images.icon]
+url = "https://raw.githubusercontent.com/renancamm/ksa-macos-molten-patcher/refs/heads/main/icon.jpg"
+sha256 = "7499ce1753c5dd82b83d49ba689db48b32070e7d3f8c49cdac118174cb78448a"
+width = 512
+height = 512
+size = 169550

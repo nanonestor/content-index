@@ -1,6 +1,11 @@
 import Ajv2020 from "../vendor/ajv2020.js";
 import { parse as parseSpdx, exceptions } from "../vendor/spdx.js";
-import { LICENSES as LICENSE_IDS, EXCEPTIONS as EXCEPTION_IDS } from "./licenses.js";
+import {
+  LICENSES as LICENSE_IDS,
+  EXCEPTIONS as EXCEPTION_IDS,
+  CURRENT_LICENSES,
+  CURRENT_EXCEPTIONS,
+} from "./licenses.js";
 import { parseDocument } from "./toml.js";
 import { records, ICON, DESCRIPTION, LIMITS, outsideLimits, centerSquare } from "./images.js";
 import { scan, SCHEME } from "./markdown.js";
@@ -11,10 +16,15 @@ export const NOTE = "note";
 export const ABSTRACT_LIMIT = 280;
 export const TAGS_SPEC = "https://github.com/KSAModding/content-manager-design/blob/main/spec/tags.md";
 const SPDX_LIST = "https://spdx.org/licenses/";
-const TAG_VOCABULARY = { mod: "mod", "mod-loader": "mod", modpack: "mod" };
+const CLOSE_LIMIT = 6;
+// RFC 0085 keeps the tags of a vehicle or a save free-form until spec/tags.md
+// lists some for them, so they get no note.
+const TAG_VOCABULARY = { mod: "mod", "mod-loader": "mod", modpack: "mod", vehicle: null, save: null };
+const PINNED_SECTIONS = ["mods", "vehicles", "saves"];
 
 const REVISION_BOUND = /^[0-9]{4}\.[0-9]+\.[0-9]+\.([0-9]+)(?![\s\S])/;
 const MONTH_BOUND = /^([0-9]{4})\.([0-9]+)(?![\s\S])/;
+const TIMESTAMP = /^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})/;
 const GAME_VERSION = /^v?(\d+)\.(\d+)\.(\d+)\.(\d+)(?:-[^+]+)?(?:\+.*)?$/;
 const LICENSE_REF = /^(?:DocumentRef-[A-Za-z0-9.-]+:)?LicenseRef-[A-Za-z0-9.-]+(?![\s\S])/;
 const THREAD_ID = "[0-9]+";
@@ -149,6 +159,14 @@ function extraStep(error) {
   return error.propertyName;
 }
 
+// A misspelt github or spacedock is read as a share host key, so its error
+// says why, in the words of check_schema.SHARE_KEY_HINT.
+function shareKeyHint(schema, error) {
+  const found = /^\/releases\/([^/]+)$/.exec(error.instancePath);
+  if (!found || Object.hasOwn(schema.properties.releases.properties, found[1])) return "";
+  return `; ${pyRepr(found[1])} is not github or spacedock, so the index reads it as a share host, whose value is the id of the listing`;
+}
+
 export function schemaMessages(validate, document) {
   if (validate(document)) {
     return [];
@@ -163,7 +181,7 @@ export function schemaMessages(validate, document) {
   const found = [];
   for (const error of kept) {
     const where = pointer(document, error.instancePath) || "the document";
-    const text = explain(error);
+    const text = explain(error) + shareKeyHint(validate.schema, error);
     const unique = where + "\n" + text;
     if (seen.has(unique)) {
       continue;
@@ -175,19 +193,59 @@ export function schemaMessages(validate, document) {
   return found;
 }
 
+// One or more decimal digits of any script, as str.isdecimal of Python reads them.
+const DECIMAL = /^\p{Nd}+$/u;
+const DIGIT = /^\p{Nd}$/u;
+
+// Unicode gives the decimal digits only in runs of ten from 0 to 9, so the
+// place of a digit in its run is its value.
+function digitValue(character) {
+  let code = character.codePointAt(0);
+  if (code >= 0x30 && code <= 0x39) return code - 0x30;
+  let place = 0;
+  while (DIGIT.test(String.fromCodePoint(code - 1))) {
+    code -= 1;
+    place += 1;
+  }
+  return place % 10;
+}
+
+function decimal(text) {
+  let value = 0n;
+  for (const character of text) value = value * 10n + BigInt(digitValue(character));
+  return value;
+}
+
+function compareCodePoints(left, right) {
+  const a = Array.from(left);
+  const b = Array.from(right);
+  for (let index = 0; index < Math.min(a.length, b.length); index += 1) {
+    const x = a[index].codePointAt(0);
+    const y = b[index].codePointAt(0);
+    if (x !== y) return x < y ? -1 : 1;
+  }
+  return a.length === b.length ? 0 : a.length < b.length ? -1 : 1;
+}
+
+// The sort key that semver_key of check_schema.py gives a version, or null
+// when it does not read the version. The numbers can have any size.
+function semverKey(version) {
+  if (typeof version !== "string") return null;
+  const withoutBuild = version.split("+")[0];
+  const dash = withoutBuild.indexOf("-");
+  const core = dash < 0 ? withoutBuild : withoutBuild.slice(0, dash);
+  const pre = dash < 0 ? "" : withoutBuild.slice(dash + 1);
+  const numbers = core.split(".");
+  if (numbers.length > 3 || !numbers.every((part) => DECIMAL.test(part))) return null;
+  // RFC 0072: a missing number reads as 0, so 0.5 and 0.5.0 are the same version.
+  while (numbers.length < 3) numbers.push("0");
+  const identifiers = pre ? pre.split(".").map((part) => (DECIMAL.test(part) ? { number: decimal(part) } : { text: part })) : null;
+  return { core: numbers.map(decimal), pre: identifiers };
+}
+
 export function semverCompare(left, right) {
-  const key = (version) => {
-    if (typeof version !== "string") return null;
-    const withoutBuild = version.split("+")[0];
-    const dash = withoutBuild.indexOf("-");
-    const core = dash < 0 ? withoutBuild : withoutBuild.slice(0, dash);
-    const pre = dash < 0 ? "" : withoutBuild.slice(dash + 1);
-    const numbers = core.split(".");
-    if (numbers.length !== 3 || !numbers.every((part) => /^[0-9]+$/.test(part))) return null;
-    return { core: numbers.map(Number), pre: pre ? pre.split(".") : null };
-  };
-  const a = key(left);
-  const b = key(right);
+  const a = semverKey(left);
+  const b = semverKey(right);
   if (a === null || b === null) return null;
   for (let index = 0; index < 3; index += 1) {
     if (a.core[index] !== b.core[index]) return a.core[index] < b.core[index] ? -1 : 1;
@@ -198,14 +256,15 @@ export function semverCompare(left, right) {
   for (let index = 0; index < Math.min(a.pre.length, b.pre.length); index += 1) {
     const x = a.pre[index];
     const y = b.pre[index];
-    const xNumeric = /^[0-9]+$/.test(x);
-    const yNumeric = /^[0-9]+$/.test(y);
+    const xNumeric = x.text === undefined;
+    const yNumeric = y.text === undefined;
     if (xNumeric && yNumeric) {
-      if (Number(x) !== Number(y)) return Number(x) < Number(y) ? -1 : 1;
+      if (x.number !== y.number) return x.number < y.number ? -1 : 1;
     } else if (xNumeric !== yNumeric) {
       return xNumeric ? -1 : 1;
-    } else if (x !== y) {
-      return x < y ? -1 : 1;
+    } else {
+      const order = compareCodePoints(x.text, y.text);
+      if (order) return order;
     }
   }
   return a.pre.length === b.pre.length ? 0 : a.pre.length < b.pre.length ? -1 : 1;
@@ -259,6 +318,23 @@ function checkParentheses(expression, found) {
   }
 }
 
+function daysIn(year, month) {
+  if (month === 2) return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0) ? 29 : 28;
+  return [4, 6, 9, 11].includes(month) ? 30 : 31;
+}
+
+// The schema checks the shape of released_at. This checks that the calendar has
+// that day and time, as check_schema.check_timestamp does.
+function checkTimestamp(value, found) {
+  if (typeof value !== "string") return;
+  const parts = TIMESTAMP.exec(value);
+  if (!parts) return;
+  const [year, month, day, hour, minute, second] = parts.slice(1).map(Number);
+  const real = year >= 1 && month >= 1 && month <= 12 && day >= 1 && day <= daysIn(year, month)
+    && hour <= 23 && minute <= 59 && second <= 59;
+  if (!real) found.push(message(ERROR, "released_at", `'${value}' is not a real date and time`));
+}
+
 function checkLinkKeys(links, found) {
   if (!isObject(links)) return;
   const seen = new Map();
@@ -297,12 +373,29 @@ function checkDependencies(document, own, found) {
   });
 }
 
+function checkPins(document, own, found) {
+  const pinned = new Map();
+  for (const section of PINNED_SECTIONS) {
+    const entries = document[section];
+    if (!Array.isArray(entries)) continue;
+    entries.forEach((entry, index) => {
+      const identifier = isObject(entry) ? fold(entry.id) : null;
+      if (identifier === null) return;
+      const where = `${section}[${index}]`;
+      if (identifier === own) found.push(message(ERROR, where, "a pack cannot pin itself"));
+      else if (pinned.has(identifier)) found.push(message(ERROR, where, `'${entry.id}' is pinned by ${pinned.get(identifier)}`));
+      if (!pinned.has(identifier)) pinned.set(identifier, where);
+    });
+  }
+}
+
 export function documentRules(document) {
   const found = [];
   const own = fold(document.id);
   checkLinkKeys(document.links, found);
   if (isObject(document.compatibility)) checkGameBounds(document.compatibility, found);
   checkParentheses(document.license, found);
+  checkTimestamp(document.released_at, found);
   if (typeof document.superseded_by === "string" && fold(document.superseded_by) === own) {
     found.push(message(ERROR, "superseded_by", "a listing cannot supersede itself"));
   }
@@ -311,25 +404,116 @@ export function documentRules(document) {
     if (fold(document.loader.id) === own) found.push(message(ERROR, "loader", "a listing cannot be its own loader"));
   }
   checkDependencies(document, own, found);
+  checkPins(document, own, found);
   return found;
 }
 
-function isKnown(token, afterWith) {
-  return LICENSE_REF.test(token) || (afterWith ? EXCEPTIONS : LICENSES).has(token.toLowerCase());
+function onList(token, exceptionPlace) {
+  return (exceptionPlace ? EXCEPTIONS : LICENSES).has(token.toLowerCase());
+}
+
+function known(token) {
+  return onList(token, false) || onList(token, true);
+}
+
+function missingOperator(expression) {
+  return (
+    `'${expression}' has two license identifiers with no operator between them; join ` +
+    "several licenses with AND or OR, such as GPL-2.0-only AND CC-BY-SA-4.0"
+  );
+}
+
+// The ids that start like a name, as check_license.close_ids finds them: an id
+// that is the start itself first, then the ids that continue with a version,
+// then the shorter ones.
+export function closeIds(name, ids = CURRENT_LICENSES) {
+  let letters = /^[A-Za-z]*/.exec(name)[0];
+  if (/[vV]$/.test(letters) && /^[0-9]/.test(name.slice(letters.length))) letters = letters.slice(0, -1);
+  for (const stem of [name, name.replace(/\s+/g, "-"), letters]) {
+    if (!stem) continue;
+    const folded = stem.toLowerCase();
+    const prefix = `${folded}-`;
+    const found = ids.filter((id) => id.toLowerCase() === folded || id.toLowerCase().startsWith(prefix));
+    if (!found.length) continue;
+    const key = (id) => id.toLowerCase() === folded
+      ? [0, 0, 0, "", ""]
+      : [1, /[0-9]/.test(id[prefix.length]) ? 0 : 1, id.length, id.toLowerCase(), id];
+    found.sort((left, right) => {
+      const [a, b] = [key(left), key(right)];
+      for (let place = 0; place < a.length; place += 1) {
+        if (a[place] !== b[place]) return a[place] < b[place] ? -1 : 1;
+      }
+      return 0;
+    });
+    return found.slice(0, CLOSE_LIMIT);
+  }
+  return [];
+}
+
+function escapeRegex(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Whether a name stands directly after a WITH, where only an exception goes, as
+// check_license.after_with tells it.
+function afterWith(expression, name) {
+  const words = name.split(/\s+/).filter(Boolean).map(escapeRegex).join("\\s+");
+  return new RegExp(`(?<![^\\s()])WITH\\s+${words}(?![^\\s()])`, "i").test(expression);
+}
+
+// A name after WITH gets close exception ids and any other name gets close
+// license ids, so a hint never names an id that is wrong in that place.
+function closeText(expression, names) {
+  return names
+    .filter((name) => !known(name))
+    .map((name) => [name, closeIds(name, afterWith(expression, name) ? CURRENT_EXCEPTIONS : CURRENT_LICENSES)])
+    .filter(([, found]) => found.length)
+    .map(([name, found]) => found.length === 1
+      ? `; the id close to ${name} is ${found[0]}`
+      : `; ids close to ${name} are ${found.slice(0, -1).join(", ")} and ${found[found.length - 1]}`)
+    .join("");
+}
+
+function notOnTheList(expression, names) {
+  return `'${expression}' names ${names.join(", ")}, which is not on the SPDX license list${closeText(expression, names)}; the identifiers are at ${SPDX_LIST}`;
+}
+
+function holdsAReference(name) {
+  const words = name.split(" ");
+  return words.length > 1 && words.some((word) => LICENSE_REF.test(word));
 }
 
 export function licenseErrors(expression) {
   if (typeof expression !== "string" || !expression.trim()) return [];
   const unknown = new Set();
   const tokens = [];
+  const words = [];
   let afterWith = false;
+  let sequence = false;
+  let misplaced = null;
   let run = [];
-  // Like license-expression, words with no operator between them are one name,
-  // except that a known first word stands alone and the rest becomes the name.
+  // Like license-expression, neighbouring words that neither list knows are one
+  // name, and a name beside another name is a missing operator. A name in the
+  // wrong place is read first of all, so an exception away from the place after
+  // WITH, and anything but an exception in it, are reported before the rest.
   const endRun = () => {
     if (!run.length) return;
-    const rest = isKnown(run[0], afterWith) ? run.slice(1) : run;
-    if (rest.length) unknown.add(rest.join(" "));
+    const names = [];
+    for (const word of run) {
+      const onEitherList = known(word);
+      const last = names[names.length - 1];
+      if (!onEitherList && last && !last.known) last.text += ` ${word}`;
+      else names.push({ text: word, known: onEitherList });
+    }
+    names.forEach((name, place) => {
+      const exceptionPlace = afterWith && place === 0;
+      const stray = exceptionPlace
+        ? !onList(name.text, true) && !LICENSE_REF.test(name.text)
+        : onList(name.text, true) && !onList(name.text, false);
+      if (stray && misplaced === null) misplaced = name.text;
+    });
+    if (names.length > 1) sequence = true;
+    else if (!onList(names[0].text, afterWith) && !LICENSE_REF.test(names[0].text)) unknown.add(names[0].text);
     tokens.push(afterWith ? PLACEHOLDER.exception : PLACEHOLDER.license);
     afterWith = false;
     run = [];
@@ -343,11 +527,12 @@ export function licenseErrors(expression) {
       continue;
     }
     run.push(token);
+    words.push(token);
   }
   endRun();
   try {
     if (tokens.some((token, place) => token === "(" && tokens[place + 1] === ")")) throw new Error("empty group");
-    if ([...unknown].some((name) => name.split(" ").some((word) => !SYMBOL.test(word)))) throw new Error("not a symbol");
+    if (words.some((word) => !SYMBOL.test(word))) throw new Error("not a symbol");
     parseSpdx(tokens.join(" "));
   } catch {
     return [
@@ -355,10 +540,10 @@ export function licenseErrors(expression) {
       "licenses with AND or OR, such as GPL-2.0-only AND CC-BY-SA-4.0",
     ];
   }
-  if (unknown.size) {
-    const named = [...unknown].sort().join(", ");
-    return [`'${expression}' names ${named}, which is not on the SPDX license list; the identifiers are at ${SPDX_LIST}`];
-  }
+  if (misplaced === null && sequence) return [missingOperator(expression)];
+  const named = misplaced !== null ? [misplaced] : [...unknown].sort();
+  if (named.some(holdsAReference)) return [missingOperator(expression)];
+  if (named.length) return [notOnTheList(expression, named)];
   return [];
 }
 
@@ -374,6 +559,63 @@ export function curatedTags(tagsText) {
   const vocabulary = parseDocument(tagsText);
   const entries = Array.isArray(vocabulary.mod) ? vocabulary.mod : [];
   return entries.filter((entry) => isObject(entry) && typeof entry.tag === "string");
+}
+
+// RFC 0094: any key of [releases] besides these names a share host, a table of hosts.toml.
+const FIXED_HOSTS = ["github", "spacedock"];
+const NOT_HOSTS = ["authority", "since", "tag_prefix"];
+
+export function shareHosts(hostsText) {
+  const document = hostsText ? parseDocument(hostsText) : {};
+  return Object.fromEntries(Object.entries(document).filter(([, table]) => isObject(table)));
+}
+
+// The rules tools/check_hosts.py runs on the share host keys of one document, with its words.
+export function hostRules(document, hosts) {
+  const releases = document.releases;
+  if (!isObject(releases)) return [];
+  const found = [];
+  const shares = Object.keys(releases).filter((key) => !FIXED_HOSTS.includes(key) && !NOT_HOSTS.includes(key));
+  for (const key of shares) {
+    const table = Object.hasOwn(hosts, key) ? hosts[key] : null;
+    if (!isObject(table) || table.kind !== "share") {
+      found.push(message(ERROR, `releases.${key}`, `'${key}' is not a share host that hosts.toml registers`));
+      continue;
+    }
+    const types = (Array.isArray(table.types) ? table.types : []).filter((name) => typeof name === "string");
+    if (!types.includes(document.type)) {
+      found.push(message(ERROR, `releases.${key}`,
+        `the share host '${key}' takes ${types.join(", ") || "no type"}, and this document is a ${document.type}`));
+    }
+    if (releases[key] !== document.id) {
+      found.push(message(ERROR, `releases.${key}`,
+        `a share host is named with the id of the listing, '${document.id}', and not ${pyRepr(releases[key])}`));
+    }
+  }
+  const named = Object.keys(releases).filter((key) => !NOT_HOSTS.includes(key));
+  const authority = releases.authority;
+  if (shares.length && named.length > 1 && authority === undefined) {
+    found.push(message(ERROR, "releases",
+      `the section names several hosts, so it needs an 'authority' key that names one of ${[...named].sort().join(", ")}`));
+  }
+  if (typeof authority === "string" && !FIXED_HOSTS.includes(authority) && !named.includes(authority)) {
+    found.push(message(ERROR, "releases.authority", `'${authority}' is not a host this section names`));
+  }
+  return found;
+}
+
+export function normalizeTag(entry) {
+  return entry.toLowerCase().replace(/[\s_]+/gu, "-").replace(/^-+|-+$/gu, "");
+}
+
+export function addTag(tags, entry, pattern) {
+  const typed = entry.trim();
+  if (!typed) return { tags, error: null };
+  const tag = normalizeTag(typed);
+  if (!pattern.test(tag)) {
+    return { tags, error: `'${typed}' cannot be a tag. A tag is lowercase letters and digits in words joined by -, such as space-station.` };
+  }
+  return { tags: tags.includes(tag) ? tags : [...tags, tag], error: null };
 }
 
 export function tagNotes(document, curated) {
@@ -513,6 +755,16 @@ export function indexRules(document, index, own) {
       }
     });
   }
+  for (const section of PINNED_SECTIONS) {
+    if (!Array.isArray(document[section])) continue;
+    document[section].forEach((member, number) => {
+      if (!isObject(member)) return;
+      const where = `${section}[${number}]`;
+      if (resolve(member.id, where) === "modpack") {
+        found.push(message(ERROR, where, `'${member.id}' is itself a pack, and a pack does not nest in spec_version 1`));
+      }
+    });
+  }
   const links = isObject(document.links) ? document.links : {};
   const thread = threadOf(index.threadPattern, links.forums);
   if (thread !== null) {
@@ -557,21 +809,50 @@ export function releaseListRules(document, gameVersions, now = new Date()) {
   return found;
 }
 
-export function createChecker({ schema, tagsText }) {
+export function gameMaxText(bound) {
+  return `'${bound}' is the newest game build the index knows, and clients block the content on `
+    + "every build above game_max, so a game_max that only says which build the content was "
+    + "tested with blocks it on the next game update";
+}
+
+// The same note as tools/check_index.py: a game_max at the newest build usually means
+// "tested with", and RFC 0091 makes a client block the content above it.
+export function gameMaxNotes(document, gameVersions) {
+  const compatibility = isObject(document.compatibility) ? document.compatibility : {};
+  const bound = compatibility.game_max;
+  const match = typeof bound === "string" ? REVISION_BOUND.exec(bound) : null;
+  if (!match || !Array.isArray(gameVersions)) return [];
+  const revisions = gameVersions
+    .map((version) => (typeof version === "string" ? REVISION_BOUND.exec(version) : null))
+    .filter(Boolean)
+    .map((found) => BigInt(found[1]));
+  if (!revisions.length) return [];
+  const newest = revisions.reduce((high, revision) => (revision > high ? revision : high));
+  if (BigInt(match[1]) !== newest) return [];
+  return [message(NOTE, "compatibility.game_max", gameMaxText(bound))];
+}
+
+export function createChecker({ schema, tagsText, hostsText = "" }) {
   const ajv = new Ajv2020({ allErrors: true, strict: false, verbose: true });
   const validate = ajv.compile(schema);
+  const contentId = ajv.compile(schema.$defs.contentId);
   const vocabulary = curatedTags(tagsText);
   const curated = vocabulary.map((entry) => entry.tag);
   const pattern = threadPattern(schema);
+  const hosts = shareHosts(hostsText);
   return {
     vocabulary,
     curated,
+    hosts,
     threadPattern: pattern,
+    tagPattern: new RegExp(schema.$defs.tag.pattern, "u"),
     maxDescriptionImages: schema.properties.images.properties.description.maxItems,
+    validId: (id) => contentId(id),
     offline(document) {
       return [
         ...schemaMessages(validate, document),
         ...documentRules(document),
+        ...hostRules(document, hosts),
         ...licenseRules(document),
         ...imageRules(document),
         ...tagNotes(document, curated),
@@ -583,6 +864,7 @@ export function createChecker({ schema, tagsText }) {
         ...this.offline(document),
         ...indexRules(document, index, own),
         ...releaseListRules(document, gameVersions),
+        ...gameMaxNotes(document, gameVersions),
       ];
     },
   };

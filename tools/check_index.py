@@ -9,6 +9,8 @@ import sys
 import tomllib
 from pathlib import Path
 
+import check_schema
+
 ROOT = Path(__file__).resolve().parent.parent
 LISTINGS = ROOT / "listings"
 PACKS = ROOT / "packs"
@@ -17,8 +19,17 @@ SCHEMA = ROOT / "schemas" / "authored.schema.json"
 PACK_TYPE = "modpack"
 LOADER_TYPE = "mod-loader"
 MOD_TYPE = "mod"
+VEHICLE_TYPE = "vehicle"
+SAVE_TYPE = "save"
 
 PINNED_SECTIONS = ("mods", "vehicles", "saves")
+MEMBER_SECTION = "mods"
+# The type each pack section pins (RFC 0085). A dependency is always a mod, so
+# only the pins of MEMBER_SECTION meet the dependencies of the others.
+SECTION_TYPES = {"mods": MOD_TYPE, "vehicles": VEHICLE_TYPE, "saves": SAVE_TYPE}
+
+REQUIRED = "required"
+CONFLICT = "conflict"
 
 THREAD_ID = "[0-9]+"
 ABSTRACT_LIMIT = 280
@@ -51,22 +62,29 @@ def _relative(path, base):
         return path.as_posix()
 
 
-def load_documents(listings=LISTINGS, packs=PACKS):
+def load_documents(listings=LISTINGS, packs=PACKS, vehicles=None, saves=None):
     """Every authored document, keyed by the holder that owns its id.
 
-    A holder is one listing file, or one pack folder with every version under
-    it. The id comes from the path.
+    A holder is one listing, vehicle or save file, or one pack folder with
+    every version under it. The id comes from the path. A folder not given is
+    the sibling of `listings`.
     """
     entries = []
     skipped = []
     base = listings.parent
+    folders = (
+        ("listing", listings),
+        ("vehicle", vehicles or base / "vehicles"),
+        ("save", saves or base / "saves"),
+    )
 
-    for path in _toml_files(listings, depth=1):
-        document = _load(path, base, skipped)
-        if document is not None:
-            entries.append(
-                Entry(path, _relative(path, base), ("listing", path.stem), path.stem, document)
-            )
+    for kind, folder in folders:
+        for path in _toml_files(folder, depth=1):
+            document = _load(path, base, skipped)
+            if document is not None:
+                entries.append(
+                    Entry(path, _relative(path, base), (kind, path.stem), path.stem, document)
+                )
 
     for path in _toml_files(packs, depth=2):
         document = _load(path, base, skipped)
@@ -122,12 +140,17 @@ def check_collisions(entries):
     return errors
 
 
-def check_references(entries):
-    """Every reference that resolves to a listed id has to name the right type."""
+def _targets(entries):
+    """The holder each id resolves to, keyed casefolded."""
     targets = {}
     for entry in entries:
         targets.setdefault(entry.folded, entry)
+    return targets
 
+
+def check_references(entries):
+    """Every reference that resolves to a listed id has to name the right type."""
+    targets = _targets(entries)
     errors = []
     for entry in entries:
         _check_successor(entry, targets, entry.where, errors)
@@ -207,21 +230,169 @@ def _check_dependency_id(entry, targets, where, value, errors):
 
 
 def _check_pins(entry, targets, where, errors):
+    for section, index, member in _pins(entry):
+        found = _resolved(entry, targets, member.get("id"), f"{where}: {section}[{index}]", errors)
+        if found == PACK_TYPE:
+            errors.append(
+                f"{where}: {section}[{index}]: '{member['id']}' is itself a pack, "
+                "and a pack does not nest in spec_version 1"
+            )
+
+
+def check_members(entries, documents, delisted, releases):
+    """The pins of each changed pack version, against the listings and the stamped releases.
+
+    `releases` is the release folder of the generated repository, and one that
+    cannot be read raises OSError or ValueError.
+    """
+    changed = [entry for entry in entries if entry.where in documents and entry.type == PACK_TYPE]
+    if not changed:
+        return []
+    if not releases.is_dir():
+        raise FileNotFoundError(f"there is no release folder at {releases}")
+
+    targets = _targets(entries)
+    semver = re.compile(_schema_pattern("semver"))
+    errors = []
+    for entry in changed:
+        pinned = {}
+        stamped = []
+        for section, index, member in _pins(entry):
+            where = f"{entry.where}: {section}[{index}]"
+            problem, release = _member(section, member, targets, delisted, releases, semver)
+            if problem:
+                errors.append(f"{where}: {problem}")
+            elif release is not None:
+                stamped.append((where, member, release))
+            if section == MEMBER_SECTION and all(isinstance(member.get(key), str) for key in ("id", "version")):
+                pinned.setdefault(member["id"].casefold(), member)
+        for where, member, release in stamped:
+            errors.extend(f"{where}: {problem}" for problem in _incomplete(member, release, pinned))
+    return errors
+
+
+def member_notes(entries, documents, disputed):
+    """A pin of a changed pack version that names a disputed listing of its section's
+    type, which passes with a warning."""
+    targets = _targets(entries)
+    notes = []
+    for entry in entries:
+        if entry.where not in documents or entry.type != PACK_TYPE:
+            continue
+        for section, index, member in _pins(entry):
+            identifier = member.get("id")
+            target = targets.get(identifier.casefold()) if isinstance(identifier, str) else None
+            if target and target.type == SECTION_TYPES[section] and target.folded in disputed:
+                notes.append(
+                    f"{entry.where}: {section}[{index}]: '{identifier}' is disputed, and a client warns about it"
+                )
+    return notes
+
+
+def _pins(entry):
     for section in PINNED_SECTIONS:
         pinned = entry.document.get(section)
         if not isinstance(pinned, list):
             continue
         for index, member in enumerate(pinned):
-            if not isinstance(member, dict):
-                continue
-            found = _resolved(
-                entry, targets, member.get("id"), f"{where}: {section}[{index}]", errors
-            )
-            if found == PACK_TYPE:
-                errors.append(
-                    f"{where}: {section}[{index}]: '{member['id']}' is itself a pack, "
-                    "and a pack does not nest in spec_version 1"
+            if isinstance(member, dict):
+                yield section, index, member
+
+
+def _member(section, member, targets, delisted, releases, semver):
+    """Why a pin is refused, or else the release it pins when there is one to read."""
+    identifier = member.get("id")
+    version = member.get("version")
+    if not isinstance(identifier, str) or not isinstance(version, str):
+        return None, None
+    wanted = SECTION_TYPES[section]
+    pinner = "a pack" if section == MEMBER_SECTION else f"[[{section}]]"
+
+    target = targets.get(identifier.casefold())
+    if target is None:
+        return f"'{identifier}' is not a listed {wanted}, and {pinner} pins only listed {wanted}s", None
+    if target.type == PACK_TYPE:
+        return None, None  # check_references reports a nested pack.
+    if target.folded in delisted:
+        return f"'{identifier}' is delisted, and {pinner} pins only listed {wanted}s", None
+    if target.type != wanted:
+        return f"'{identifier}' is listed as a {target.type}, and {pinner} pins only {wanted}s", None
+
+    if not semver.match(version):
+        return None, None  # check_schema reports it, and it must never become a path.
+
+    path = releases / target.identifier / f"{version}.json"
+    if not path.is_file():
+        return f"'{identifier}' has no stamped release {version}", None
+    release = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(release, dict) or not isinstance(release.get("dependencies", []), list):
+        raise ValueError(f"{path} is not a release file")
+    if release.get("yanked") is True:
+        return f"'{identifier}' {version} is yanked", None
+    return None, release
+
+
+def _incomplete(member, release, pinned):
+    """The dependencies of one pinned release that the other pins do not meet."""
+    problems = []
+    for dependency in release.get("dependencies", []):
+        if not isinstance(dependency, dict):
+            continue
+        kind = dependency.get("kind")
+        if kind == REQUIRED:
+            options = dependency.get("any_of", [dependency])
+            if not any(_pinned_within(option, pinned) for option in options):
+                problems.append(
+                    f"{_named(member)} requires {_wanted(options)}, and the pack "
+                    f"{_pinned_instead(options, pinned)}"
                 )
+        elif kind == CONFLICT and _folded(dependency) != member["id"].casefold():
+            if _pinned_within(dependency, pinned):
+                problems.append(
+                    f"{_named(member)} conflicts with {_wanted([dependency])}, and the pack "
+                    f"pins {_named(pinned[_folded(dependency)])}"
+                )
+    return problems
+
+
+def _folded(dependency):
+    identifier = dependency.get("id")
+    return identifier.casefold() if isinstance(identifier, str) else None
+
+
+def _pinned_within(dependency, pinned):
+    member = pinned.get(_folded(dependency))
+    version = check_schema.semver_key(member.get("version")) if member else None
+    low = check_schema.semver_key(dependency.get("min"))
+    high = check_schema.semver_key(dependency.get("max"))
+    return version is not None and (low is None or low <= version) and (high is None or version <= high)
+
+
+def _wanted(options):
+    described = [f"'{option.get('id')}'{_bounds(option)}" for option in options]
+    return described[0] if len(described) == 1 else f"one of {', '.join(described)}"
+
+
+def _bounds(option):
+    low, high = option.get("min"), option.get("max")
+    if low and high:
+        return f" {low} to {high}"
+    if low:
+        return f" {low} or newer"
+    if high:
+        return f" {high} or older"
+    return ""
+
+
+def _pinned_instead(options, pinned):
+    found = [_named(pinned[key]) for key in map(_folded, options) if key in pinned]
+    if found:
+        return f"pins {' and '.join(found)}"
+    return "does not pin it" if len(options) == 1 else "pins none of them"
+
+
+def _named(member):
+    return f"'{member['id']}' {member['version']}"
 
 
 def check(entries):
@@ -229,9 +400,13 @@ def check(entries):
     return check_collisions(entries) + check_references(entries)
 
 
+def _schema_pattern(name, schema=SCHEMA):
+    return json.loads(schema.read_text(encoding="utf-8"))["$defs"][name]["pattern"]
+
+
 def thread_pattern(schema=SCHEMA):
     """The schema's rule for links.forums, with the thread id captured."""
-    rule = json.loads(schema.read_text(encoding="utf-8"))["$defs"]["forumsUrl"]["pattern"]
+    rule = _schema_pattern("forumsUrl", schema)
     if rule.count(THREAD_ID) != 1:
         raise ValueError(f"{_relative(schema, ROOT)}: forumsUrl has no single thread id to capture")
     return re.compile(rule.replace(THREAD_ID, f"({THREAD_ID})"))
@@ -284,8 +459,44 @@ def check_abstracts(entries, documents):
     return notes
 
 
+def bounded(entries, documents):
+    """The changed documents whose game_max names one revision, as (where, bound) pairs."""
+    found = []
+    for entry in entries:
+        compatibility = entry.document.get("compatibility")
+        bound = compatibility.get("game_max") if isinstance(compatibility, dict) else None
+        key = check_schema.game_bound_key(bound)
+        if entry.where in documents and key and key[0] == "revision":
+            found.append((entry.where, bound))
+    return found
+
+
+def game_max_text(bound):
+    """The note on a game_max that is the newest build. The listing page gives the same text."""
+    return (
+        f"'{bound}' is the newest game build the index knows, and clients block the content on "
+        "every build above game_max, so a game_max that only says which build the content was "
+        "tested with blocks it on the next game update"
+    )
+
+
+def game_max_notes(bounds, versions):
+    """A note for each bound that is the newest revision of the game release list.
+
+    RFC 0091 makes a client block the content above game_max, and a game_max at
+    the newest build usually means "tested with", not "breaks above".
+    """
+    keys = (check_schema.game_bound_key(version) for version in versions)
+    newest = max((key[1] for key in keys if key and key[0] == "revision"), default=None)
+    return [
+        f"{where}: compatibility.game_max: {game_max_text(bound)}"
+        for where, bound in bounds
+        if newest is not None and check_schema.game_bound_key(bound)[1] == newest
+    ]
+
+
 def notes(entries, documents):
-    """Every note on the changed documents."""
+    """Every note on the changed documents that needs nothing outside this repository."""
     return check_forums(entries, documents) + check_abstracts(entries, documents)
 
 

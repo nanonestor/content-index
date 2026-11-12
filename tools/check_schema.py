@@ -26,12 +26,18 @@ from jsonschema.exceptions import best_match
 ROOT = Path(__file__).resolve().parent.parent
 SCHEMA = ROOT / "schemas" / "authored.schema.json"
 LISTINGS = ROOT / "listings"
+VEHICLES = ROOT / "vehicles"
+SAVES = ROOT / "saves"
 PACKS = ROOT / "packs"
 
 REVISION_BOUND = re.compile(r"^[0-9]{4}\.[0-9]+\.[0-9]+\.([0-9]+)(?![\s\S])")
 MONTH_BOUND = re.compile(r"^([0-9]{4})\.([0-9]+)(?![\s\S])")
 
 PINNED_SECTIONS = ("mods", "vehicles", "saves")
+
+# A misspelt github or spacedock is read as a share host key, so its error says
+# why. The listing page adds the same words.
+SHARE_KEY_HINT = "{key} is not github or spacedock, so the index reads it as a share host, whose value is the id of the listing"
 
 
 def normalise(value):
@@ -60,8 +66,16 @@ def load(path, errors):
         with path.open("rb") as handle:
             return normalise(tomllib.load(handle))
     except tomllib.TOMLDecodeError as error:
-        errors.append(f"{path}: not valid TOML, {error}")
+        errors.append(f"{_relative(path)}: not valid TOML, {error}")
         return None
+
+
+def _relative(path):
+    """The path from the repository root, as the other checks name a document."""
+    try:
+        return Path(path).resolve().relative_to(ROOT).as_posix()
+    except ValueError:
+        return str(path)
 
 
 def pointer(error):
@@ -104,6 +118,17 @@ def explain(error):
             return f"{error.message}; for example, use {sample!r}"
         title = titled(error.schema)
         return f"{error.instance!r} is not {title}" if title else error.message
+    if error.validator == "additionalProperties" and "patternProperties" in error.schema:
+        # The raw message would show the regex of the share host keys, so it
+        # is worded as it is for a section without one.
+        extras = [
+            key
+            for key in error.instance
+            if key not in error.schema.get("properties", {})
+            and not any(re.search(pattern, key) for pattern in error.schema["patternProperties"])
+        ]
+        verb = "was" if len(extras) == 1 else "were"
+        return f"Additional properties are not allowed ({', '.join(map(repr, extras))} {verb} unexpected)"
     if error.validator != "not":
         return error.message
     if error.validator_value == {}:
@@ -115,18 +140,25 @@ def explain(error):
 def check_schema(path, document, validator, errors):
     for error in sorted(validator.iter_errors(document), key=lambda e: list(map(str, e.absolute_path))):
         deepest = best_match([error]) or error
-        errors.append(f"{path}: {pointer(deepest)}: {explain(deepest)}")
+        text = explain(deepest)
+        if "patternProperties" in deepest.absolute_schema_path:
+            text += "; " + SHARE_KEY_HINT.format(key=repr(deepest.absolute_path[-1]))
+        errors.append(f"{path}: {pointer(deepest)}: {text}")
 
 
 def semver_key(version):
-    """Sort key for a release version, per SemVer 2.0.0. None when it does not parse."""
+    """Sort key for a version, per SemVer 2.0.0. None when it does not parse.
+
+    RFC 0072 lets a version name one or two numbers, and a missing one reads
+    as 0, so 0.5 and 0.5.0 are the same version.
+    """
     if not isinstance(version, str):
         return None
     core, _, pre = version.partition("+")[0].partition("-")
     numbers = core.split(".")
-    if len(numbers) != 3 or not all(part.isdecimal() for part in numbers):
+    if not 1 <= len(numbers) <= 3 or not all(part.isdecimal() for part in numbers):
         return None
-    core_key = tuple(int(part) for part in numbers)
+    core_key = tuple(int(part) for part in numbers) + (0,) * (3 - len(numbers))
     if not pre:
         # A release outranks every pre-release of the same core version.
         return (core_key, (1,))
@@ -340,7 +372,7 @@ def documents():
             and len(path.relative_to(folder).parts) == depth
         )
 
-    return toml_files(LISTINGS, 1) + toml_files(PACKS, 2)
+    return toml_files(LISTINGS, 1) + toml_files(VEHICLES, 1) + toml_files(SAVES, 1) + toml_files(PACKS, 2)
 
 
 def validator():

@@ -2,20 +2,30 @@
 # SPDX-License-Identifier: MIT
 """Tests for what the privileged half does about a verdict. No token, no network."""
 
+import hashlib
 import json
 import re
 import sys
 import tempfile
+import tomllib
 import unittest
 import urllib.error
+import urllib.parse
 from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+import check_hosts
+import check_schema
 import check_scope
 import decide
 import ownership
+import pack_ownership
+import validate
+
+# The real reader, which the Act tests stand in for.
+CHANGED_PATHS = decide.changed_paths
 
 WORKFLOWS = Path(__file__).resolve().parent.parent / ".github/workflows"
 
@@ -120,6 +130,7 @@ class RecordingApi:
         self.labels = list(labels)
         self.reviewers = reviewers or {"teams": []}
         self.files = {"listings/AutoStage.toml": LISTING} if files is None else files
+        self.folders = {}
         self.repositories = repositories or {}
         self.spacedock = spacedock or {}
         self.repository_reads = []
@@ -155,6 +166,9 @@ class RecordingApi:
             return self.files[(path, ref)]
         return self.files.get(path)
 
+    def folder(self, path, ref):
+        return self.folders.get((path, ref), [])
+
     # What OwnershipApi forwards to a release host.
     def repository_of(self, full_name):
         self.repository_reads.append(full_name)
@@ -165,6 +179,10 @@ class RecordingApi:
 
     def spacedock_mod(self, mod_id):
         return self.spacedock.get(mod_id)
+
+    def merge_base(self, base_ref, head_sha):
+        # With no merge base set, the pull request is cut from the tip of its base branch.
+        return getattr(self, "merge_base_sha", None) or base_ref
 
     def graphql(self, query, variables):
         self.graphql_calls.append(variables)
@@ -185,7 +203,7 @@ class Table(unittest.TestCase):
         decision = decide.decide(verdict("could-not-evaluate"), True, VERIFIED)
         self.assertEqual(decision.status, "error")
         self.assertFalse(decision.auto_merge)
-        self.assertIn("Push a fix", decision.comment)
+        self.assertIn(decide.RUN_AGAIN, decision.comment)
 
     def test_the_happy_path_arms_auto_merge_and_says_what_happens_next(self):
         decision = decide.decide(verdict(), True, VERIFIED)
@@ -202,6 +220,16 @@ class Table(unittest.TestCase):
         self.assertTrue(decision.auto_merge)
         self.assertIn("snapshot follows", decision.comment)
         self.assertNotIn("watcher", decision.comment)
+
+    def test_several_documents_are_listed_in_the_comment_whatever_the_state(self):
+        # Each branch of decide that renders a reason: the list starts on its own
+        # line, so every document is a list item, and no full stop trails it.
+        reason = "- listings/A.toml: not proven\n- listings/B.toml: not proven"
+        for state in (ownership.UNVERIFIED, ownership.COULD_NOT_EVALUATE, ownership.REJECTED):
+            with self.subTest(state=state):
+                decision = decide.decide(verdict(), True, ownership.Result(state, reason))
+                self.assertIn("\n\n" + reason, decision.comment)
+                self.assertNotIn("not proven.", decision.comment)
 
     def test_a_change_that_is_not_a_candidate_waits_for_a_steward(self):
         decision = decide.decide(
@@ -232,14 +260,26 @@ class Table(unittest.TestCase):
         self.assertIn(ownership.MARKER_PATH, decision.comment)
         self.assertIn("source code link", decision.comment)
 
+    def test_the_comment_offers_the_marker_file_only_outside_a_fork(self):
+        # A fork's marker file does not verify it, so the advice must not send
+        # the author of a fork to commit one.
+        decision = decide.decide(verdict(), True, UNVERIFIED)
+        self.assertIn(f"when it is not a fork, commit `{ownership.MARKER_PATH}`", decision.comment)
+        self.assertIn("A fork also passes when your account owns it", decision.comment)
+
+    def test_the_comment_carries_the_advice_of_the_ownership_module(self):
+        # content-index-releases shows ownership.ADVICE too, so both flows say the same.
+        decision = decide.decide(verdict(), True, UNVERIFIED)
+        self.assertIn(ownership.ADVICE, decision.comment)
+
     def test_pack_guidance_does_not_suggest_a_release_host_proof(self):
         result = ownership.Result(
             ownership.UNVERIFIED,
-            "this is the first claim",
-            instructions="A steward must accept the first claim.",
+            "Somebody is not the recorded owner of this pack",
+            instructions="A steward decides whether the recorded pack owner must change.",
         )
         decision = decide.decide(verdict(), True, result)
-        self.assertIn("steward must accept", decision.comment)
+        self.assertIn("recorded pack owner must change", decision.comment)
         self.assertNotIn("release repository", decision.comment)
 
     def test_ownership_that_could_not_be_checked_waits_too(self):
@@ -268,21 +308,264 @@ class Table(unittest.TestCase):
         for document, candidate, result in cases:
             with self.subTest(outcome=document["verdict"], candidate=candidate, owner=result.state):
                 decision = decide.decide(document, candidate, result)
-                self.assertIn("Notes:\n- `schema`: all good", decision.comment)
+                self.assertIn("**For your information**\n- `schema`: all good", decision.comment)
 
     def test_a_run_with_no_messages_has_no_notes_section(self):
         decision = decide.decide(verdict(), True, VERIFIED)
-        self.assertNotIn("Notes:", decision.comment)
+        self.assertNotIn("For your information", decision.comment)
 
-    def test_reject_and_could_not_evaluate_tell_the_author_to_push_a_fix(self):
-        for outcome in ("reject", "could-not-evaluate"):
-            with self.subTest(outcome=outcome):
-                decision = decide.decide(verdict(outcome), True, VERIFIED)
-                self.assertIn("Push a fix and the checks run again.", decision.comment)
+    def test_a_rejection_tells_the_author_to_push_a_fix(self):
+        decision = decide.decide(verdict("reject"), True, VERIFIED)
+        self.assertIn("Push a fix and the checks run again.", decision.comment)
+
+    def test_could_not_evaluate_asks_for_no_fix(self):
+        decision = decide.decide(verdict("could-not-evaluate"), True, VERIFIED)
+        self.assertIn(decide.RUN_AGAIN, decision.comment)
+        self.assertNotIn(decide.PUSH_AGAIN, decision.comment)
+
+    def test_a_pack_ownership_rejection_asks_for_a_push(self):
+        result = ownership.Result(ownership.REJECTED, "a pack version cannot change")
+        decision = decide.decide(verdict(), True, result)
+        self.assertEqual(decision.status, "failure")
+        self.assertIn(decide.PUSH_AGAIN, decision.comment)
 
     def test_the_run_url_is_linked_when_given(self):
         decision = decide.decide(verdict("reject"), True, VERIFIED, run_url="https://x/run/1")
         self.assertIn("https://x/run/1", decision.comment)
+
+
+LONELY = "listings/LonelyPlanets.toml"
+NO_PIN = "the change touches no pack version, so no pin was checked"
+FOLDER = (
+    "the latest release 1.2.2 cannot be stamped: the archive's top-level directory is "
+    "'LonelyPlanets-1.2.2', which does not match the id 'LonelyPlanets'"
+)
+
+
+def release_check(outcome, message, **others):
+    """The release check as validate.py builds it from inspected listings.
+
+    `others` maps a further listing path to its Outcome.
+    """
+    results = {str(validate.ROOT / LONELY): validate.check_release.Outcome(outcome, [message])}
+    results.update({str(validate.ROOT / path): found for path, found in others.items()})
+    with mock.patch.object(validate.check_release, "inspect_paths", return_value=results):
+        return validate.run_release([LONELY, *others])
+
+
+def lonely_planets(outcome, release):
+    """The verdict of #187 or #188 in the format validate.py writes now."""
+    checks = [
+        validate.Check("layout", validate.PASS),
+        validate.Check("schema", validate.PASS),
+        validate.Check("image fetch", validate.PASS),
+        release,
+    ]
+    return verdict(
+        outcome,
+        [check.as_dict() for check in checks],
+        documents=[LONELY],
+        schema_version=validate.VERDICT_SCHEMA_VERSION,
+    )
+
+
+class VerdictComment(unittest.TestCase):
+    def test_187_explains_the_folder_and_points_at_the_release(self):
+        document = lonely_planets("reject", release_check(validate.REJECT, FOLDER))
+        decision = decide.decide(document, True, VERIFIED)
+        self.assertEqual(decision.status, "failure")
+        comment = decision.comment
+        self.assertIn(f"**What has to change**\n- `release`: {LONELY}: {FOLDER}\n  - ", comment)
+        self.assertIn(
+            "When mod.toml is directly in `LonelyPlanets-1.2.2`, renaming that folder to "
+            "`LonelyPlanets` is enough",
+            comment,
+        )
+        self.assertNotIn("pack members", comment)
+        self.assertNotIn(NO_PIN, comment)
+        self.assertNotIn("For your information", comment)
+        self.assertIn(decide.RELEASE_AGAIN, comment)
+        self.assertNotIn(decide.PUSH_AGAIN, comment)
+
+    def test_188_passes_with_its_note_and_no_pack_members_line(self):
+        stamped = f"{LONELY}: the latest release 1.2.2 stamps cleanly"
+        document = lonely_planets(
+            "pass", release_check(validate.PASS, "the latest release 1.2.2 stamps cleanly")
+        )
+        decision = decide.decide(document, True, VERIFIED)
+        self.assertTrue(decision.auto_merge)
+        self.assertIn(f"**For your information**\n- `release`: {stamped}", decision.comment)
+        self.assertNotIn("What has to change", decision.comment)
+        self.assertNotIn(NO_PIN, decision.comment)
+
+    def test_a_verdict_with_only_notes_passes_and_shows_them(self):
+        note = "listings/Mod.toml: tags: 'shiny' is not a curated tag, so no client shows it"
+        checks = [{"name": "tags", "outcome": "pass", "errors": [], "notes": [note], "summary": []}]
+        decision = decide.decide(verdict(checks=checks), True, VERIFIED)
+        self.assertEqual(decision.status, "success")
+        self.assertTrue(decision.auto_merge)
+        self.assertIn(f"**For your information**\n- `tags`: {note}\n  - The tag `shiny`", decision.comment)
+        self.assertNotIn("What has to change", decision.comment)
+
+    def test_the_old_format_still_gives_a_comment(self):
+        # What validate.py wrote before the split, as on #187.
+        checks = [
+            {"name": "pack members", "outcome": "pass", "messages": [NO_PIN]},
+            {"name": "release", "outcome": "reject", "messages": [f"{LONELY}: {FOLDER}"]},
+        ]
+        decision = decide.decide(verdict("reject", checks, schema_version=1), True, VERIFIED)
+        self.assertEqual(decision.status, "failure")
+        self.assertIn(f"**What has to change**\n- `release`: {LONELY}: {FOLDER}", decision.comment)
+        self.assertIn("renaming that folder to `LonelyPlanets` is enough", decision.comment)
+        self.assertIn(f"**For your information**\n- `pack members`: {NO_PIN}", decision.comment)
+        self.assertIn(decide.RELEASE_AGAIN, decision.comment)
+
+    def test_one_message_from_two_checks_is_one_line(self):
+        toml = "listings/Bad.toml: not valid TOML, Invalid value (at line 2, column 8)"
+        other = "listings/Bad.toml: the file name has to end in '.toml', in lowercase"
+        checks = [
+            {"name": "layout", "outcome": "reject", "errors": [toml, other], "notes": [], "summary": []},
+            {"name": "schema", "outcome": "reject", "errors": [toml], "notes": [], "summary": []},
+        ]
+        comment = decide.decide(verdict("reject", checks), True, VERIFIED).comment
+        self.assertEqual(comment.count(toml), 1)
+        self.assertIn(f"- `layout`, `schema`: {toml}\n", comment)
+        self.assertIn(f"- `layout`: {other}", comment)
+
+    def test_summary_lines_never_reach_the_comment(self):
+        checks = [{"name": "release", "outcome": "pass", "errors": [], "notes": [], "summary": ["quiet"]}]
+        decision = decide.decide(verdict(checks=checks), True, VERIFIED)
+        self.assertNotIn("quiet", decision.comment)
+        self.assertNotIn("For your information", decision.comment)
+
+    def test_an_error_in_the_pull_request_asks_for_a_push(self):
+        checks = [
+            {"name": "release", "outcome": "reject", "errors": [f"{LONELY}: {FOLDER}"]},
+            {"name": "schema", "outcome": "reject", "errors": ["id is not valid"]},
+        ]
+        decision = decide.decide(verdict("reject", checks), True, VERIFIED)
+        self.assertIn(decide.PUSH_AGAIN, decision.comment)
+        self.assertNotIn(decide.RELEASE_AGAIN, decision.comment)
+
+    def test_what_could_not_be_checked_has_its_own_section(self):
+        checks = [
+            {"name": "release", "outcome": "reject", "errors": [f"{LONELY}: {FOLDER}"]},
+            {"name": "image fetch", "outcome": "could-not-evaluate", "errors": ["timed out"]},
+        ]
+        decision = decide.decide(verdict("reject", checks), True, VERIFIED)
+        self.assertIn("**What could not be checked**\n- `image fetch`: timed out", decision.comment)
+        self.assertNotIn("`image fetch`: timed out", decision.comment.split("What could not")[0])
+        # A new run checks the images again, so the fix in the release is all it takes.
+        self.assertIn(decide.RELEASE_AGAIN, decision.comment)
+
+    def test_one_check_can_reject_one_listing_and_not_read_another(self):
+        other = "listings/Other.toml"
+        unreachable = "github:a/b could not be read: HTTP 502"
+        release = release_check(
+            validate.REJECT,
+            FOLDER,
+            **{other: validate.check_release.Outcome(validate.COULD_NOT_EVALUATE, [unreachable])},
+        )
+        self.assertEqual(release.outcome, validate.REJECT)
+        decision = decide.decide(lonely_planets("reject", release), True, VERIFIED)
+        changed, unchecked = decision.comment.split("**What could not be checked**")
+        self.assertIn(FOLDER, changed)
+        self.assertNotIn(unreachable, changed)
+        self.assertIn(f"- `release`: {other}: {unreachable}", unchecked)
+        self.assertIn(decide.RELEASE_AGAIN, decision.comment)
+
+    def test_only_what_could_not_be_checked_asks_for_no_fix(self):
+        checks = [
+            {"name": "release", "outcome": "could-not-evaluate", "errors": [], "unchecked": ["HTTP 502"]},
+        ]
+        decision = decide.decide(verdict("could-not-evaluate", checks), True, VERIFIED)
+        self.assertIn("**What could not be checked**\n- `release`: HTTP 502", decision.comment)
+        self.assertNotIn("What has to change", decision.comment)
+        self.assertIn(decide.RUN_AGAIN, decision.comment)
+        self.assertNotIn(decide.PUSH_AGAIN, decision.comment)
+
+    def test_a_pack_has_no_release_line_in_the_comment(self):
+        pack = "packs/effects-pack/1.0.0.toml"
+        found = validate.check_release.Outcome(
+            validate.PASS,
+            summary=["type 'modpack' has no release archive, so there is nothing to inspect"],
+        )
+        with mock.patch.object(
+            validate.check_release, "inspect_paths", return_value={str(validate.ROOT / pack): found}
+        ):
+            release = validate.run_release([pack])
+        document = verdict(checks=[release.as_dict()])
+        decision = decide.decide(document, True, VERIFIED)
+        self.assertNotIn("nothing to inspect", decision.comment)
+        self.assertNotIn("For your information", decision.comment)
+
+    def test_ownership_without_proof_names_the_topic_and_the_repository(self):
+        result = ownership.Result(
+            ownership.UNVERIFIED,
+            "Jared-Melchers did not prove control of Jared/KSA-LonelyPlanets: no matching owner, "
+            f"no ksa-index-jared-melchers topic, and no {ownership.MARKER_PATH}",
+        )
+        comment = decide.decide(verdict(), True, result).comment
+        self.assertIn(ownership.ADVICE, comment)
+        self.assertIn("Add the topic `ksa-index-jared-melchers` to Jared/KSA-LonelyPlanets.", comment)
+        self.assertIn("(https://github.com/Jared/KSA-LonelyPlanets)", comment)
+        self.assertLess(comment.index(ownership.ADVICE), comment.index("ksa-index-jared-melchers`"))
+        self.assertIn(decide.PROOF_AGAIN, comment)
+
+    def test_a_pack_reason_gets_no_proof_explanation(self):
+        result = ownership.Result(
+            ownership.UNVERIFIED,
+            "Somebody is not the recorded owner of this pack",
+            instructions="A steward decides whether the recorded pack owner must change.",
+        )
+        self.assertNotIn(decide.PROOF_AGAIN, decide.decide(verdict(), True, result).comment)
+
+
+class OwnerAdvice(unittest.TestCase):
+    PATH = "packs/Starter/owner.json"
+
+    def test_a_head_repository_that_is_gone_gets_the_record_without_a_link(self):
+        pull = pull_request()
+        pull["head"]["repo"] = None
+        [paragraph] = decide.owner_advice(pull, [self.PATH])
+        self.assertIn('"github_login": "Maxi"', paragraph)
+        self.assertIn('"github_id": 7', paragraph)
+        self.assertNotIn("https://", paragraph)
+        self.assertIn("no link", paragraph)
+
+    def test_the_branch_name_cannot_leave_the_link(self):
+        [paragraph] = decide.owner_advice(pull_request(branch="a) [b](c d"), [self.PATH])
+        link = re.search(r"\]\((https://[^)\s]+)\)", paragraph).group(1)
+        self.assertEqual(urllib.parse.urlsplit(link).path, f"/{FORK}/new/a%29%20%5Bb%5D%28c%20d")
+
+    def test_a_path_that_is_not_plain_gets_nothing(self):
+        self.assertEqual(decide.owner_advice(pull_request(), ["packs/a`b/owner.json"]), [])
+
+    def test_an_author_without_an_account_id_gets_nothing(self):
+        pull = pull_request()
+        pull["user"] = {"login": "Maxi"}
+        self.assertEqual(decide.owner_advice(pull, [self.PATH]), [])
+
+    def test_the_advice_reaches_the_comment_of_every_outcome(self):
+        cases = [
+            (verdict("reject"), True, UNVERIFIED),
+            (verdict("could-not-evaluate"), True, UNVERIFIED),
+            (verdict(), True, REJECTED),
+            (verdict(), False, UNVERIFIED),
+            (verdict(), True, VERIFIED),
+            (verdict(), True, UNAVAILABLE),
+            (verdict(), True, UNVERIFIED),
+        ]
+        for document, candidate, result in cases:
+            decision = decide.decide(document, candidate, result, "", ["the owner record"])
+            self.assertIn("the owner record", decision.comment)
+
+    def test_checks_run_again_on_every_push_to_a_pull_request(self):
+        # The advice promises that a commit to the head branch runs the checks again.
+        text = (WORKFLOWS / "checks.yml").read_text(encoding="utf-8")
+        trigger = re.search(r"(?m)^on:\n  pull_request:[ \t]*\n((?:    .*\n)*)", text)
+        self.assertIsNotNone(trigger)
+        self.assertEqual(trigger.group(1), "", "the pull_request trigger is narrowed")
 
 
 class Agreement(unittest.TestCase):
@@ -309,38 +592,92 @@ class Agreement(unittest.TestCase):
 class Comment(unittest.TestCase):
     def test_the_first_run_creates_one(self):
         api = RecordingApi()
-        decide.upsert_comment(api, 5, "Something to say")
+        decide.upsert_comment(api, 5, "Something to say", INDEX_APP)
         methods = [(method, path) for method, path, _, _ in api.sent]
         self.assertEqual(methods, [("POST", "/issues/5/comments")])
         self.assertIn(decide.COMMENT_MARKER, api.sent[0][2]["body"])
 
     def test_a_later_run_edits_the_same_one(self):
-        api = RecordingApi(comments=[{"id": 9, "body": f"{decide.COMMENT_MARKER}\nold"}])
-        decide.upsert_comment(api, 5, "new")
+        api = RecordingApi(
+            comments=[{"id": 9, "body": f"{decide.COMMENT_MARKER}\nold", "user": INDEX_BOT}]
+        )
+        decide.upsert_comment(api, 5, "new", INDEX_APP)
         self.assertEqual([m for m, _, _, _ in api.sent], ["PATCH"])
         self.assertIn("/issues/comments/9", api.sent[0][1])
 
     def test_an_unchanged_comment_is_left_alone(self):
         body = f"{decide.COMMENT_MARKER}\nsame"
-        api = RecordingApi(comments=[{"id": 9, "body": body}])
-        decide.upsert_comment(api, 5, "same")
+        api = RecordingApi(comments=[{"id": 9, "body": body, "user": INDEX_BOT}])
+        decide.upsert_comment(api, 5, "same", INDEX_APP)
         self.assertEqual(api.sent, [])
 
     def test_nothing_to_say_and_nothing_there_posts_nothing(self):
         api = RecordingApi()
-        decide.upsert_comment(api, 5, None)
+        decide.upsert_comment(api, 5, None, INDEX_APP)
         self.assertEqual(api.sent, [])
 
     def test_nothing_to_say_resolves_a_comment_that_is_there(self):
-        api = RecordingApi(comments=[{"id": 9, "body": f"{decide.COMMENT_MARKER}\nrejected"}])
-        decide.upsert_comment(api, 5, None)
+        api = RecordingApi(
+            comments=[{"id": 9, "body": f"{decide.COMMENT_MARKER}\nrejected", "user": INDEX_BOT}]
+        )
+        decide.upsert_comment(api, 5, None, INDEX_APP)
         self.assertEqual([m for m, _, _, _ in api.sent], ["PATCH"])
         self.assertIn("ownership verified", api.sent[0][2]["body"])
 
     def test_a_foreign_comment_is_not_touched(self):
         api = RecordingApi(comments=[{"id": 9, "body": "a human said something"}])
-        decide.upsert_comment(api, 5, "mine")
+        decide.upsert_comment(api, 5, "mine", INDEX_APP)
         self.assertEqual([m for m, _, _, _ in api.sent], ["POST"])
+
+    def test_a_comment_with_the_marker_by_someone_else_is_ignored(self):
+        """The App can not edit it, so an edit would fail with 403."""
+        stranger = {"login": "someone", "type": "User"}
+        other_bot = {"login": "ksadata[bot]", "type": "Bot"}
+        api = RecordingApi(
+            comments=[
+                {"id": 8, "body": f"{decide.COMMENT_MARKER}\nfake", "user": stranger},
+                {"id": 7, "body": f"{decide.COMMENT_MARKER}\nfake", "user": other_bot},
+            ]
+        )
+        decide.upsert_comment(api, 5, "mine", INDEX_APP)
+        self.assertEqual(
+            api.sent,
+            [("POST", "/issues/5/comments", {"body": f"{decide.COMMENT_MARKER}\nmine"}, None)],
+        )
+
+    def test_a_second_run_edits_the_comment_that_the_first_run_posted(self):
+        api = RecordingApi(
+            comments=[
+                {"id": 8, "body": f"{decide.COMMENT_MARKER}\nfake", "user": {"login": "someone", "type": "User"}}
+            ]
+        )
+        decide.upsert_comment(api, 5, "first", INDEX_APP)
+        [(_, _, posted, _)] = api.sent
+        api.sent.clear()
+        api.comments.append({"id": 9, "body": posted["body"], "user": INDEX_BOT})
+        decide.upsert_comment(api, 5, "second", INDEX_APP)
+        self.assertEqual(
+            api.sent,
+            [("PATCH", "/issues/comments/9", {"body": f"{decide.COMMENT_MARKER}\nsecond"}, None)],
+        )
+
+    def test_without_an_app_slug_no_comment_counts(self):
+        api = RecordingApi(
+            comments=[{"id": 9, "body": f"{decide.COMMENT_MARKER}\nold", "user": INDEX_BOT}]
+        )
+        decide.upsert_comment(api, 5, "new", "")
+        self.assertEqual(
+            api.sent,
+            [("POST", "/issues/5/comments", {"body": f"{decide.COMMENT_MARKER}\nnew"}, None)],
+        )
+
+    def test_nothing_to_say_leaves_a_comment_of_someone_else_alone(self):
+        stranger = {"login": "someone", "type": "User"}
+        api = RecordingApi(
+            comments=[{"id": 8, "body": f"{decide.COMMENT_MARKER}\nfake", "user": stranger}]
+        )
+        decide.upsert_comment(api, 5, None, INDEX_APP)
+        self.assertEqual(api.sent, [])
 
 
 class MissingLabelApi(RecordingApi):
@@ -417,6 +754,28 @@ class DocumentLabel(unittest.TestCase):
         api = RecordingApi(labels=[decide.STEWARD_LABEL, "area:publishing"])
         decide.sync_document_labels(api, 5, [])
         self.assertEqual(api.sent, [])
+
+    def test_a_vehicle_and_a_save_are_labelled_and_unlabelled(self):
+        api = RecordingApi(labels=["listing", "save"])
+        decide.sync_document_labels(api, 5, ["vehicle"])
+        self.assertEqual(
+            [(method, path, payload) for method, path, payload, _ in api.sent],
+            [
+                ("DELETE", "/issues/5/labels/listing", None),
+                ("POST", "/issues/5/labels", {"labels": ["vehicle"]}),
+                ("DELETE", "/issues/5/labels/save", None),
+            ],
+        )
+
+    def test_a_vehicle_label_the_repository_does_not_have_is_created_first(self):
+        for kind in ("vehicle", "save"):
+            with self.subTest(kind=kind):
+                api = MissingLabelApi(kind)
+                decide.sync_document_labels(api, 5, [kind])
+                self.assertEqual(
+                    api.sent[0][2],
+                    {"name": kind, "color": "0e8a16", "description": f"changes a {kind} document"},
+                )
 
     def test_a_label_the_repository_does_not_have_is_created_first(self):
         api = MissingLabelApi("listing")
@@ -614,6 +973,107 @@ class OwnershipFor(unittest.TestCase):
         self.assertEqual(self.seen, [])
 
 
+class OwnershipForAll(unittest.TestCase):
+    """Every document of a change reaches the ownership check, and one result comes back."""
+
+    PACK = "packs/NavigationStarterPack/1.0.0.toml"
+
+    def setUp(self):
+        self.pull = {"user": {"login": "Maxi", "id": 7}, "base": {"ref": "main"}}
+        self.results = {}
+        self.seen = []
+
+        def one(api, pull, path, head_sha, lookups=None):
+            self.seen.append(path)
+            return self.results[path]
+
+        patch = mock.patch.object(decide, "ownership_for", one)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def run_for(self, *paths):
+        return decide.ownership_for_all(None, self.pull, list(paths), "head1234567890")
+
+    def test_every_document_is_checked(self):
+        self.results = {"listings/A.toml": VERIFIED, "listings/B.toml": VERIFIED}
+        result = self.run_for("listings/A.toml", "listings/B.toml")
+        self.assertEqual(self.seen, ["listings/A.toml", "listings/B.toml"])
+        self.assertEqual(result.state, ownership.VERIFIED)
+
+    def test_one_unverified_document_holds_the_whole_change(self):
+        self.results = {"listings/A.toml": VERIFIED, "listings/B.toml": UNVERIFIED}
+        result = self.run_for("listings/A.toml", "listings/B.toml")
+        self.assertEqual(result.state, ownership.UNVERIFIED)
+        self.assertIn("listings/B.toml", result.reason)
+        self.assertIn(UNVERIFIED.reason, result.reason)
+
+    def test_a_rejection_wins_over_everything_else(self):
+        self.results = {self.PACK: REJECTED, "listings/B.toml": UNVERIFIED}
+        result = self.run_for(self.PACK, "listings/B.toml")
+        self.assertEqual(result.state, ownership.REJECTED)
+        self.assertIn(self.PACK, result.reason)
+
+    def test_a_host_that_did_not_answer_wins_over_an_unverified_one(self):
+        # An author who cannot prove control reads what to do; a host having a
+        # bad moment is nobody's fault and says so instead.
+        self.results = {"listings/A.toml": UNAVAILABLE, "listings/B.toml": UNVERIFIED}
+        result = self.run_for("listings/A.toml", "listings/B.toml")
+        self.assertEqual(result.state, ownership.COULD_NOT_EVALUATE)
+
+    def test_every_document_that_is_not_verified_is_named(self):
+        # One round for the author, not one push per document.
+        self.results = {
+            "listings/A.toml": UNVERIFIED,
+            "listings/B.toml": VERIFIED,
+            "listings/C.toml": UNVERIFIED,
+        }
+        result = self.run_for("listings/A.toml", "listings/B.toml", "listings/C.toml")
+        self.assertEqual(result.state, ownership.UNVERIFIED)
+        self.assertIn("listings/A.toml", result.reason)
+        self.assertIn("listings/C.toml", result.reason)
+        self.assertNotIn("listings/B.toml", result.reason)
+        self.assertEqual(result.reason.count("\n- "), 1)
+
+    def test_a_document_of_another_state_is_named_too(self):
+        self.results = {"listings/A.toml": UNAVAILABLE, "listings/B.toml": UNVERIFIED}
+        result = self.run_for("listings/A.toml", "listings/B.toml")
+        self.assertEqual(result.state, ownership.COULD_NOT_EVALUATE)
+        self.assertIn(UNAVAILABLE.reason, result.reason)
+        self.assertIn(UNVERIFIED.reason, result.reason)
+
+    def test_a_reason_that_names_its_document_is_not_prefixed_again(self):
+        own = ownership.Result(
+            ownership.REJECTED,
+            f"{self.PACK} already exists on main; an accepted pack version is immutable",
+        )
+        self.results = {self.PACK: own, "listings/B.toml": VERIFIED}
+        result = self.run_for(self.PACK, "listings/B.toml")
+        self.assertEqual(result.reason, own.reason)
+
+    def test_the_reason_of_a_single_document_is_not_prefixed(self):
+        self.results = {"listings/A.toml": UNVERIFIED}
+        result = self.run_for("listings/A.toml")
+        self.assertEqual(result.reason, UNVERIFIED.reason)
+
+    def test_packs_alone_keep_the_pack_proof(self):
+        pack = ownership.Result(ownership.VERIFIED, "", decide.pack_ownership.PROOF)
+        self.results = {self.PACK: pack, "packs/Other/2.0.0.toml": pack}
+        result = self.run_for(self.PACK, "packs/Other/2.0.0.toml")
+        self.assertEqual(result.proof, decide.pack_ownership.PROOF)
+
+    def test_a_listing_among_them_drops_the_pack_proof(self):
+        # The watcher stamps the listing's release, so the comment has to say so.
+        pack = ownership.Result(ownership.VERIFIED, "", decide.pack_ownership.PROOF)
+        self.results = {self.PACK: pack, "listings/A.toml": VERIFIED}
+        result = self.run_for(self.PACK, "listings/A.toml")
+        self.assertIsNone(result.proof)
+
+    def test_nothing_to_check_stays_unverified(self):
+        result = self.run_for()
+        self.assertEqual(result.state, ownership.UNVERIFIED)
+        self.assertEqual(self.seen, [])
+
+
 class SpaceDockListing(unittest.TestCase):
     """A SpaceDock-hosted listing goes through the same call, with the real check."""
 
@@ -713,13 +1173,91 @@ class SpaceDockApi(unittest.TestCase):
         self.assertIn("502", str(raised.exception))
 
     def test_a_network_failure_is_unavailable(self):
-        with self.assertRaises(ownership.Unavailable):
+        with self.assertRaises(ownership.Unavailable) as raised:
             self.fetch(error=OSError("connection reset"))
+        self.assertIn("SpaceDock did not answer about mod 4253", str(raised.exception))
 
     def test_a_body_that_is_not_a_document_is_unavailable(self):
         for body in (b"not json", b"[]", b"null"):
             with self.assertRaises(ownership.Unavailable, msg=body):
                 self.fetch(answer=Answer(body))
+
+
+class FolderApi(unittest.TestCase):
+    """How `Api.folder` lists a folder of the index on a branch."""
+
+    def fetch(self, answer=None, error=None, ref="main"):
+        opener = mock.Mock(side_effect=error) if error else mock.Mock(return_value=answer)
+        api = decide.Api("KSAModding/content-index", "app", public_token="workflow")
+        with mock.patch.object(decide.urllib.request, "urlopen", opener):
+            result = api.folder("packs", ref)
+        return result, opener
+
+    @staticmethod
+    def tree(entries, truncated=False):
+        return Answer(json.dumps({"sha": "t0", "tree": entries, "truncated": truncated}).encode())
+
+    def test_the_entries_come_back_as_names_and_types(self):
+        answer = self.tree([{"path": "Starter", "type": "tree"}, {"path": "README.md", "type": "blob"}])
+        entries, opener = self.fetch(answer=answer)
+        self.assertEqual(entries, [("Starter", "dir"), ("README.md", "file")])
+        request = opener.call_args.args[0]
+        self.assertEqual(
+            request.full_url,
+            "https://api.github.com/repos/KSAModding/content-index/git/trees/main%3Apacks",
+        )
+
+    def test_a_branch_with_a_slash_is_one_path_segment(self):
+        _, opener = self.fetch(answer=self.tree([]), ref="stack/base")
+        self.assertEqual(
+            opener.call_args.args[0].full_url,
+            "https://api.github.com/repos/KSAModding/content-index/git/trees/stack%2Fbase%3Apacks",
+        )
+
+    def test_more_than_a_thousand_entries_are_listed(self):
+        answer = self.tree([{"path": f"p{n}", "type": "tree"} for n in range(1500)])
+        entries, _ = self.fetch(answer=answer)
+        self.assertEqual(len(entries), 1500)
+
+    def test_a_folder_that_is_not_there_has_no_entries(self):
+        entries, _ = self.fetch(error=http_error(404))
+        self.assertEqual(entries, [])
+
+    def test_a_listing_the_api_cut_short_is_unavailable(self):
+        answer = self.tree([{"path": "Starter", "type": "tree"}], truncated=True)
+        with self.assertRaises(ownership.Unavailable):
+            self.fetch(answer=answer)
+
+    def test_a_file_is_not_a_folder(self):
+        with self.assertRaises(ownership.Unavailable):
+            self.fetch(error=http_error(422))
+        with self.assertRaises(ownership.Unavailable):
+            self.fetch(answer=Answer(b'{"sha": "b0", "content": "", "encoding": "base64"}'))
+
+
+class MergeBaseApi(unittest.TestCase):
+    """How `Api.merge_base` asks GitHub where a pull request starts from."""
+
+    def fetch(self, answer=None, error=None):
+        opener = mock.Mock(side_effect=error) if error else mock.Mock(return_value=answer)
+        api = decide.Api("KSAModding/content-index", "app", public_token="workflow")
+        with mock.patch.object(decide.urllib.request, "urlopen", opener):
+            result = api.merge_base("main", "abc1234")
+        return result, opener
+
+    def test_the_merge_base_comes_from_the_comparison(self):
+        body = json.dumps({"merge_base_commit": {"sha": "fork0"}, "files": []})
+        sha, opener = self.fetch(answer=Answer(body.encode()))
+        self.assertEqual(sha, "fork0")
+        self.assertEqual(
+            opener.call_args.args[0].full_url,
+            "https://api.github.com/repos/KSAModding/content-index/compare/main...abc1234?per_page=1",
+        )
+
+    def test_no_merge_base_is_unavailable(self):
+        for answer, error in ((Answer(b"{}"), None), (None, http_error(404)), (None, http_error(502))):
+            with self.assertRaises(ownership.Unavailable):
+                self.fetch(answer=answer, error=error)
 
 
 class AutoMerge(unittest.TestCase):
@@ -780,13 +1318,33 @@ class DecideArguments(unittest.TestCase):
 
     def test_every_argument_the_script_needs_is_passed(self):
         text = self.step()
-        for flag in ("--event", "--head-repository", "--head-branch", "--head-sha"):
+        flags = ("--event", "--head-repository", "--head-branch", "--head-sha", "--record-url", "--app-slug")
+        for flag in flags:
             self.assertIn(flag, text, f"ownership.yml does not pass {flag}")
+
+    def test_the_app_slug_comes_from_the_token_that_posts_the_record(self):
+        self.assertIn("APP_SLUG: ${{ steps.app-token.outputs.app-slug }}", self.step())
+        self.assertIn('--app-slug "$APP_SLUG"', self.step())
 
     def test_nothing_is_interpolated_into_a_shell_here(self):
         """A fork picks its own branch name, and this job holds the App token."""
         for line in run_block_lines(self.step()):
             self.assertNotIn("${{", line, f"interpolated into a command: {line.strip()}")
+
+    def test_the_verdict_artifact_can_not_replace_the_tools(self):
+        """A pull request can change checks.yml and so put any file into the
+        artifact, so it lands outside the checkout and after the install."""
+        lines = self.step().splitlines()
+        install = next(i for i, line in enumerate(lines) if "pip install" in line)
+        download = next(i for i, line in enumerate(lines) if "actions/download-artifact" in line)
+        self.assertLess(install, download, "the install must run before the download")
+        step = []
+        for line in lines[download + 1 :]:
+            if line.strip().startswith("- ") or not line.strip():
+                break
+            step.append(line.strip())
+        self.assertIn("path: ${{ runner.temp }}/verdict", step)
+        self.assertIn('--verdict "$RUNNER_TEMP/verdict/verdict.json"', self.step())
 
 
 class Act(unittest.TestCase):
@@ -806,7 +1364,7 @@ class Act(unittest.TestCase):
         patch.start()
         self.addCleanup(patch.stop)
 
-    def act(self, document=None, write=True, event="pull_request"):
+    def act(self, document=None, write=True, event="pull_request", record_url=""):
         path = self.root / "verdict.json"
         if write:
             path.write_text(json.dumps(document if document is not None else verdict()),
@@ -819,6 +1377,8 @@ class Act(unittest.TestCase):
             head_sha="abc",
             repository=self.api.repository,
             run_url="",
+            record_url=record_url,
+            app_slug=INDEX_APP,
             dry_run=False,
         )
         return decide.act(self.api, arguments)
@@ -848,7 +1408,7 @@ class Act(unittest.TestCase):
         with mock.patch.object(decide.ownership, "verify", lambda *a, **k: VERIFIED):
             self.assertEqual(self.act(), 0)
         self.assertEqual(self.api.graphql_calls, [{"id": "PR_5"}])
-        self.assertEqual([ref for _, _, ref in self.api.reads], ["abc", "main"])
+        self.assertEqual([ref for _, _, ref in self.api.reads][:2], ["abc", "main"])
         self.assertEqual(self.statuses()[-1]["state"], "success")
 
     def test_an_addition_that_the_base_branch_already_carries_is_an_edit(self):
@@ -862,7 +1422,7 @@ class Act(unittest.TestCase):
         }
         asked = []
 
-        def verify(document, login, author_id, api):
+        def verify(document, login, author_id, api, registry=None):
             asked.append(document["releases"]["github"])
             return VERIFIED if document["releases"]["github"] == "Attacker/Mod" else UNVERIFIED
 
@@ -904,7 +1464,7 @@ class Act(unittest.TestCase):
         }
         asked = []
 
-        def verify(document, login, author_id, api):
+        def verify(document, login, author_id, api, registry=None):
             host = document["releases"]["github"]
             asked.append(host)
             return VERIFIED if host == "Attacker/Mod" else UNVERIFIED
@@ -949,6 +1509,34 @@ class Act(unittest.TestCase):
         self.assertIn("could not be armed", comment["body"])
         self.assertIn("archive checked", comment["body"])
 
+    def test_a_vehicle_that_verifies_and_passes_is_armed(self):
+        path = "vehicles/ExampleRover.toml"
+        text = (
+            'spec_version = 1\nid = "ExampleRover"\ntype = "vehicle"\nname = "Example Rover"\n'
+            'authors = ["Maxi"]\nabstract = "A rover for the Moon."\nlicense = "CC-BY-4.0"\n'
+            '[releases]\ngithub = "Maxi/KSA-Rovers"\ntag_prefix = "ExampleRover-"\n'
+            '[[dependencies]]\nid = "ExamplePartsMod"\nkind = "required"\nmin = "1.4.0"\n'
+        )
+        errors = []
+        check_schema.check_parsed(path, tomllib.loads(text), check_schema.validator(), errors)
+        self.assertEqual(errors, [])
+
+        changes = [check_scope.Change(path, "added")]
+        self.assertEqual(check_scope.evaluate(changes), (True, [path], ""))
+        checks = [validate.Check("schema", validate.PASS, []).as_dict()]
+        self.api.files = {(path, "abc"): text}
+        self.api.repositories = {"Maxi/KSA-Rovers": {
+            "full_name": "Maxi/KSA-Rovers", "fork": False,
+            "owner": {"id": 7, "login": "Maxi", "type": "User"},
+        }}
+        with mock.patch.object(decide, "changed_paths", lambda api, number: changes):
+            self.assertEqual(self.act(verdict(checks=checks, documents=[path])), 0)
+
+        self.assertEqual(self.api.repository_reads, ["Maxi/KSA-Rovers"])
+        self.assertEqual([status["state"] for status in self.statuses()], ["pending", "success"])
+        self.assertEqual(self.api.graphql_calls, [{"id": "PR_5"}])
+        self.assertEqual(self.labelled(), ["vehicle"])
+
     def test_a_rejection_leaves_a_steward_label_alone(self):
         self.api.labels = [decide.STEWARD_LABEL]
         self.assertEqual(self.act(verdict("reject")), 0)
@@ -968,16 +1556,37 @@ class Act(unittest.TestCase):
             self.assertEqual(self.act(), 0)
         self.assertEqual(self.labelled(), ["listing"])
 
-    def test_a_change_that_touches_both_kinds_carries_both(self):
+    def test_a_listing_and_a_pack_version_merge_themselves_and_carry_both_labels(self):
+        # The pack's owner is already accepted on the base branch, so its
+        # ownership verifies through the pack path, not through a patch.
+        self.api.files = {
+            ("listings/AutoStage.toml", "abc"): LISTING,
+            ("packs/Starter/owner.json", "main"): json.dumps({"github_login": "Maxi", "github_id": 7}),
+        }
         with mock.patch.object(
             decide, "changed_paths",
             lambda api, number: [
                 check_scope.Change("listings/AutoStage.toml", "added"),
-                check_scope.Change("packs/Starter/1.0.0.toml", "added"),
+                check_scope.Change("packs/Starter/2.0.0.toml", "added"),
             ],
         ):
-            self.assertEqual(self.act(), 0)
-        self.assertEqual(self.labelled(), ["listing", "pack", decide.STEWARD_LABEL])
+            with mock.patch.object(decide.ownership, "verify", lambda *a, **k: VERIFIED):
+                self.assertEqual(self.act(), 0)
+        self.assertEqual(self.api.graphql_calls, [{"id": "PR_5"}])
+        self.assertEqual(self.labelled(), ["listing", "pack"])
+        comment = self.api.sent[[path for _, path, _, _ in self.api.sent].index("/issues/5/comments")][2]["body"]
+        self.assertIn("merges on its own", comment)
+        self.assertIn("watcher", comment)
+
+    def test_more_documents_than_the_limit_wait_for_a_steward(self):
+        paths = [
+            check_scope.Change(f"listings/Mod{index}.toml", "added")
+            for index in range(check_scope.MAX_DOCUMENTS + 1)
+        ]
+        with mock.patch.object(decide, "changed_paths", lambda api, number: paths):
+            with mock.patch.object(decide.ownership, "verify", lambda *a, **k: VERIFIED):
+                self.assertEqual(self.act(), 0)
+        self.assertIn(decide.STEWARD_LABEL, self.labelled())
 
     def test_a_first_pack_claim_cannot_name_another_owner(self):
         owner_path = "packs/Starter/owner.json"
@@ -996,6 +1605,60 @@ class Act(unittest.TestCase):
         self.assertEqual(self.statuses()[-1]["state"], "failure")
         self.assertEqual(self.api.graphql_calls, [])
 
+    def test_a_first_pack_claim_by_its_author_merges_itself(self):
+        owner_path = "packs/Starter/owner.json"
+        self.api.files = {
+            (owner_path, "abc"): json.dumps({"github_login": "Maxi", "github_id": 7})
+        }
+        with mock.patch.object(
+            decide,
+            "changed_paths",
+            lambda api, number: [
+                check_scope.Change("packs/Starter/1.0.0.toml", "added"),
+                check_scope.Change(owner_path, "added"),
+            ],
+        ):
+            self.assertEqual(self.act(), 0)
+        self.assertEqual(self.api.graphql_calls, [{"id": "PR_5"}])
+        self.assertEqual(self.statuses()[-1]["state"], "success")
+        self.assertEqual(self.labelled(), ["pack"])
+
+    def test_a_first_pack_claim_of_an_id_a_listing_holds_waits(self):
+        owner_path = "packs/Starter/owner.json"
+        self.api.files = {
+            (owner_path, "abc"): json.dumps({"github_login": "Maxi", "github_id": 7})
+        }
+        self.api.folders = {("listings", "main"): [("starter.toml", "file")]}
+        with mock.patch.object(
+            decide,
+            "changed_paths",
+            lambda api, number: [
+                check_scope.Change("packs/Starter/1.0.0.toml", "added"),
+                check_scope.Change(owner_path, "added"),
+            ],
+        ):
+            self.assertEqual(self.act(), 0)
+        self.assertEqual(self.api.graphql_calls, [])
+        self.assertIn(decide.STEWARD_LABEL, self.labelled())
+
+    def test_a_later_version_cannot_change_the_recorded_pack_owner(self):
+        owner_path = "packs/Starter/owner.json"
+        self.api.files = {
+            (owner_path, "main"): json.dumps({"github_login": "Maxi", "github_id": 7}),
+            (owner_path, "abc"): json.dumps({"github_login": "Other", "github_id": 9}),
+        }
+        with mock.patch.object(
+            decide,
+            "changed_paths",
+            lambda api, number: [
+                check_scope.Change("packs/Starter/2.0.0.toml", "added"),
+                check_scope.Change(owner_path, "modified"),
+            ],
+        ):
+            self.assertEqual(self.act(), 0)
+        self.assertEqual(self.api.graphql_calls, [])
+        self.assertIn(decide.STEWARD_LABEL, self.labelled())
+
     def test_the_recorded_pack_owner_can_merge_a_new_version(self):
         owner_path = "packs/Starter/owner.json"
         self.api.files = {
@@ -1009,6 +1672,61 @@ class Act(unittest.TestCase):
             self.assertEqual(self.act(), 0)
         self.assertEqual(self.api.graphql_calls, [{"id": "PR_5"}])
         self.assertEqual(self.statuses()[-1]["state"], "success")
+
+    def pack_claim(self, *changes):
+        with mock.patch.object(
+            decide, "changed_paths",
+            lambda api, number: [check_scope.Change(path, "added") for path in changes],
+        ):
+            self.assertEqual(self.act(verdict("reject")), 0)
+        return [p for _, path, p, _ in self.api.sent if path.endswith("/comments")][0]["body"]
+
+    def test_a_first_pack_claim_without_its_owner_record_gets_the_record_and_a_link(self):
+        self.api.files = {}
+        body = self.pack_claim("packs/Starter/1.0.0.toml")
+
+        text = re.search(r"```json\n(.*?)\n```", body, re.S).group(1) + "\n"
+        record, problem = pack_ownership.parse_record(text, "the comment")
+        self.assertEqual(problem, "")
+        self.assertEqual(record, {"github_login": "Maxi", "github_id": 7})
+
+        link = re.search(r"\]\((https://[^)]+)\)", body).group(1)
+        address = urllib.parse.urlsplit(link)
+        self.assertEqual(address.path, f"/{FORK}/new/{BRANCH}")
+        query = urllib.parse.parse_qs(address.query)
+        self.assertEqual(query["filename"], ["packs/Starter/owner.json"])
+        self.assertEqual(query["value"], [text])
+        self.assertLess(body.index(link), body.index("Push a fix"))
+
+    def test_a_first_pack_claim_with_its_owner_record_gets_no_link(self):
+        self.api.files = {}
+        body = self.pack_claim("packs/Starter/1.0.0.toml", "packs/Starter/owner.json")
+        self.assertNotIn("/new/", body)
+        self.assertNotIn("```json", body)
+
+    def test_a_later_pack_version_gets_no_link(self):
+        self.api.files = {("packs/Starter/owner.json", "main"): json.dumps({"github_login": "Maxi", "github_id": 7})}
+        self.api.folders = {("packs", "main"): [("Starter", "dir")]}
+        body = self.pack_claim("packs/Starter/2.0.0.toml")
+        self.assertNotIn("/new/", body)
+        self.assertNotIn("```json", body)
+
+    def test_a_case_variant_of_a_held_pack_id_gets_no_link(self):
+        self.api.files = {}
+        self.api.folders = {("packs", "main"): [("Starter", "dir")]}
+        body = self.pack_claim("packs/starter/1.0.0.toml")
+        self.assertNotIn("/new/", body)
+        self.assertNotIn("```json", body)
+
+    def test_a_pack_path_that_is_not_plain_still_gets_the_rejection(self):
+        # http.client refuses such a path in a URL, so no read may carry it.
+        self.api.files = {}
+        refused = mock.Mock(side_effect=UnicodeEncodeError("ascii", "", 0, 1, "not ASCII"))
+        with mock.patch.object(self.api, "file", refused):
+            body = self.pack_claim("packs/My Pack/1.0.0.toml", "packs/Caf\u00e9/1.0.0.toml")
+        self.assertIn("The validation rejected this change.", body)
+        self.assertNotIn("```json", body)
+        self.assertEqual(self.statuses()[-1]["state"], "failure")
 
     def test_a_change_that_touches_no_document_carries_no_kind(self):
         with mock.patch.object(
@@ -1033,6 +1751,693 @@ class Act(unittest.TestCase):
         self.assertEqual(self.act(event="workflow_dispatch"), 0)
         self.assertEqual(self.api.sent, [])
         self.assertEqual(self.api.graphql_calls, [])
+
+
+VICTIM_LISTING = 'id = "AutoStage"\n[releases]\ngithub = "Victim/Mod"\n'
+VICTIM_VEHICLE = 'id = "ExampleRover"\ntype = "vehicle"\n[releases]\ngithub = "Victim/Rovers"\n'
+
+
+def personal(full_name, login, account_id):
+    return {full_name: {"full_name": full_name, "fork": False,
+                        "owner": {"id": account_id, "login": login, "type": "User"}}}
+
+
+class OwnerNotes(Act):
+    """The verdict comment mentions whoever owns what somebody else changes."""
+
+    def run_change(self, *changes, outcome=None):
+        with mock.patch.object(decide, "changed_paths", lambda api, number: list(changes)), \
+                mock.patch.object(decide.ownership, "verify", lambda *a, **k: UNVERIFIED):
+            self.assertEqual(self.act(outcome), 0)
+        return [p for _, path, p, _ in self.api.sent if path.endswith("/comments")][0]["body"]
+
+    def edit(self, outcome=None):
+        return self.run_change(check_scope.Change("listings/AutoStage.toml", "modified"), outcome=outcome)
+
+    def status_change(self, base, head):
+        self.api.files = {
+            ("index-status.toml", "main"): base,
+            ("index-status.toml", "abc"): head,
+            ("listings/AutoStage.toml", "main"): VICTIM_LISTING,
+            ("packs/Starter/owner.json", "main"): json.dumps({"github_login": "PackOwner", "github_id": 9}),
+        }
+        self.api.folders = {
+            ("listings", "main"): [("AutoStage.toml", "file"), ("README.md", "file")],
+            ("packs", "main"): [("Starter", "dir"), ("README.md", "file")],
+        }
+        self.api.repositories = personal("Victim/Mod", "Victim", 3)
+        return self.run_change(check_scope.Change("index-status.toml", "modified"))
+
+    def test_a_steward_edit_of_another_persons_listing_mentions_the_owner(self):
+        self.api.files = {("listings/AutoStage.toml", "main"): VICTIM_LISTING,
+                          ("listings/AutoStage.toml", "abc"): VICTIM_LISTING}
+        self.api.repositories = personal("Victim/Mod", "Victim", 3)
+        body = self.edit()
+        self.assertIn(
+            "- @Victim owns `listings/AutoStage.toml`, which this pull request changes.", body
+        )
+
+    def test_the_owners_own_edit_mentions_nobody(self):
+        self.api.repositories = personal("Maxi/KSA-AutoStage", "maxi", 7)
+        body = self.edit()
+        self.assertNotIn("@", body)
+        self.assertNotIn("Owners of", body)
+        # The owner was looked up and found to be the author, not skipped unasked.
+        self.assertEqual(self.api.repository_reads, ["Maxi/KSA-AutoStage"])
+
+    def test_a_renamed_listing_mentions_the_owner_under_its_old_name(self):
+        self.api.files = {("listings/AutoStage.toml", "main"): VICTIM_LISTING}
+        self.api.repositories = personal("Victim/Mod", "Victim", 3)
+        body = self.run_change(
+            check_scope.Change("listings/AutoStage2.toml", "renamed", "listings/AutoStage.toml")
+        )
+        self.assertIn("- @Victim owns `listings/AutoStage.toml`, which this pull request changes.", body)
+
+    def test_a_handover_mentions_the_owner_of_the_host_it_leaves(self):
+        self.api.files = {("listings/AutoStage.toml", "main"): VICTIM_LISTING,
+                          ("listings/AutoStage.toml", "abc"): LISTING}
+        self.api.repositories = {**personal("Victim/Mod", "Victim", 3),
+                                 **personal("Maxi/KSA-AutoStage", "Maxi", 7)}
+        self.assertIn("@Victim owns", self.edit())
+
+    def test_the_mention_is_there_whatever_the_outcome(self):
+        self.api.files = {("listings/AutoStage.toml", "main"): VICTIM_LISTING}
+        self.api.repositories = personal("Victim/Mod", "Victim", 3)
+        self.assertIn("@Victim owns", self.edit(verdict("reject")))
+
+    def test_a_new_listing_mentions_nobody(self):
+        self.api.files = {("listings/AutoStage.toml", "abc"): LISTING}
+        body = self.run_change(check_scope.Change("listings/AutoStage.toml", "added"))
+        self.assertNotIn("Owners of", body)
+
+    def test_no_owner_gives_the_note_and_no_mention(self):
+        self.api.files = {("listings/AutoStage.toml", "main"): VICTIM_LISTING}
+        body = self.edit()
+        self.assertNotIn("@", body)
+        self.assertIn(
+            "- Nobody is told about `listings/AutoStage.toml`, because no owner could be named: "
+            "Victim/Mod does not exist or is private.",
+            body,
+        )
+
+    def test_a_delisting_mentions_the_owner_of_the_delisted_listing(self):
+        body = self.status_change(
+            "entries = []\n",
+            '[[entries]]\nid = "AUTOSTAGE"\nstate = "delisted"\nreason = "Gone."\n',
+        )
+        self.assertIn(
+            "- @Victim owns `listings/AutoStage.toml`, whose state in `index-status.toml` "
+            "this pull request changes.",
+            body,
+        )
+
+    def test_lifting_a_dispute_mentions_the_owner_too(self):
+        body = self.status_change(
+            '[[entries]]\nid = "AutoStage"\nstate = "disputed"\n', "entries = []\n"
+        )
+        self.assertIn("@Victim owns `listings/AutoStage.toml`", body)
+
+    def test_a_state_merged_after_the_branch_was_cut_mentions_nobody(self):
+        # The base branch delisted AutoStage after this pull request was cut from
+        # "fork0", and the pull request changes another entry only.
+        self.api.merge_base_sha = "fork0"
+        self.api.files = {
+            ("index-status.toml", "fork0"): "entries = []\n",
+            ("index-status.toml", "main"): '[[entries]]\nid = "AutoStage"\nstate = "delisted"\n',
+            ("index-status.toml", "abc"): '[[entries]]\nid = "Starter"\nstate = "disputed"\n',
+            ("listings/AutoStage.toml", "main"): VICTIM_LISTING,
+            ("packs/Starter/owner.json", "main"): json.dumps({"github_login": "PackOwner", "github_id": 9}),
+        }
+        self.api.folders = {
+            ("listings", "main"): [("AutoStage.toml", "file")],
+            ("packs", "main"): [("Starter", "dir")],
+        }
+        self.api.repositories = personal("Victim/Mod", "Victim", 3)
+        body = self.run_change(check_scope.Change("index-status.toml", "modified"))
+        self.assertIn("@PackOwner owns the pack `packs/Starter`", body)
+        self.assertNotIn("@Victim", body)
+
+    def test_a_merge_base_that_cannot_be_read_says_nobody_is_told(self):
+        def merge_base(base_ref, head_sha):
+            raise ownership.Unavailable("GitHub names no merge base of main and abc")
+
+        with mock.patch.object(self.api, "merge_base", merge_base):
+            body = self.status_change("entries = []\n", '[[entries]]\nid = "AutoStage"\nstate = "delisted"\n')
+        self.assertIn("Nobody is told about the states in `index-status.toml`", body)
+        self.assertNotIn("@Victim", body)
+
+    def test_a_state_that_stays_mentions_nobody(self):
+        body = self.status_change(
+            '[[entries]]\nid = "AutoStage"\nstate = "disputed"\nreason = "Old."\n',
+            '[[entries]]\nid = "AutoStage"\nstate = "disputed"\nreason = "New."\n',
+        )
+        self.assertNotIn("@", body)
+
+    def test_a_retracted_pack_version_mentions_the_owner_in_owner_json(self):
+        body = self.status_change(
+            "entries = []\n",
+            '[[entries]]\nid = "Starter"\nstate = "retracted"\nversion = "1.0.0"\n',
+        )
+        self.assertIn(
+            "- @PackOwner owns the pack `packs/Starter`, whose state in `index-status.toml` "
+            "this pull request changes.",
+            body,
+        )
+        self.assertNotIn("@Victim", body)
+
+    def test_an_id_that_names_nothing_on_the_base_branch_is_not_echoed(self):
+        body = self.status_change(
+            "entries = []\n", '[[entries]]\nid = "@x **y**"\nstate = "delisted"\n'
+        )
+        self.assertNotIn("**y**", body)
+        self.assertNotIn("Owners of", body)
+
+    def test_a_state_file_that_cannot_be_read_says_nobody_is_told(self):
+        def file(full_name, path, ref=None):
+            raise ownership.Unavailable("HTTP 502 asking for index-status.toml")
+
+        with mock.patch.object(self.api, "file", file):
+            body = self.run_change(check_scope.Change("index-status.toml", "modified"))
+        self.assertIn("Nobody is told about the states in `index-status.toml`", body)
+        self.assertIn("HTTP 502", body)
+
+    def test_a_version_of_somebody_elses_pack_mentions_its_owner(self):
+        self.api.files = {
+            ("packs/Starter/owner.json", "main"): json.dumps({"github_login": "PackOwner", "github_id": 9})
+        }
+        body = self.run_change(check_scope.Change("packs/Starter/2.0.0.toml", "added"))
+        self.assertIn("- @PackOwner owns the pack `packs/Starter`, which this pull request changes.", body)
+
+    def test_the_pack_owner_adding_a_version_mentions_nobody(self):
+        # The account id decides, so a renamed owner is not told about their own change.
+        self.api.files = {
+            ("packs/Starter/owner.json", "main"): json.dumps({"github_login": "OldName", "github_id": 7})
+        }
+        self.api.graphql_answer = {"errors": [{"message": "auto-merge is off"}]}
+        body = self.run_change(check_scope.Change("packs/Starter/2.0.0.toml", "added"))
+        self.assertNotIn("@", body)
+
+    def test_a_steward_edit_of_another_persons_vehicle_mentions_the_owner(self):
+        self.api.files = {("vehicles/ExampleRover.toml", "main"): VICTIM_VEHICLE}
+        self.api.repositories = personal("Victim/Rovers", "Victim", 3)
+        body = self.run_change(check_scope.Change("vehicles/ExampleRover.toml", "modified"))
+        self.assertIn(
+            "- @Victim owns `vehicles/ExampleRover.toml`, which this pull request changes.", body
+        )
+
+    def test_a_state_of_a_vehicle_or_a_save_mentions_its_owner(self):
+        self.api.files = {
+            ("index-status.toml", "main"): "entries = []\n",
+            ("index-status.toml", "abc"): (
+                '[[entries]]\nid = "examplerover"\nstate = "delisted"\n'
+                '[[entries]]\nid = "ExampleBase"\nstate = "disputed"\n'
+            ),
+            ("vehicles/ExampleRover.toml", "main"): VICTIM_VEHICLE,
+            ("saves/ExampleBase.toml", "main"): VICTIM_VEHICLE.replace("ExampleRover", "ExampleBase"),
+        }
+        self.api.folders = {
+            ("vehicles", "main"): [("ExampleRover.toml", "file")],
+            ("saves", "main"): [("ExampleBase.toml", "file")],
+        }
+        self.api.repositories = personal("Victim/Rovers", "Victim", 3)
+        body = self.run_change(check_scope.Change("index-status.toml", "modified"))
+        state = "whose state in `index-status.toml` this pull request changes."
+        self.assertIn(f"- @Victim owns `vehicles/ExampleRover.toml`, {state}", body)
+        self.assertIn(f"- @Victim owns `saves/ExampleBase.toml`, {state}", body)
+
+    def test_a_path_that_is_not_plain_is_never_looked_up_or_echoed(self):
+        # A rejection runs no ownership check, so every read here is a lookup for a mention.
+        self.api.files = {}
+        body = self.run_change(
+            check_scope.Change("packs/My Pack/1.0.0.toml", "added"),
+            check_scope.Change("listings/Bad`Name.toml", "modified"),
+            outcome=verdict("reject"),
+        )
+        self.assertEqual(self.api.reads, [])
+        self.assertNotIn("My Pack", body)
+        self.assertNotIn("Bad`Name", body)
+
+
+SHARE_BOT = 98765432
+SHARE_TABLE = {"kind": "share", "storage": "ksamods-content/share", "bot": SHARE_BOT, "types": ["vehicle"]}
+
+
+def share_vehicle(identifier):
+    return (
+        f'spec_version = 1\nid = "{identifier}"\ntype = "vehicle"\nname = "{identifier}"\n'
+        'authors = ["A player"]\nabstract = "A vehicle shared on a share host."\nlicense = "CC-BY-4.0"\n'
+        f'\n[releases]\nksamods = "{identifier}"\n'
+    )
+
+
+class ShareHostPullRequests(unittest.TestCase):
+    """A share host opens grouped pull requests from its bot account (RFC 0094)."""
+
+    act = Act.act
+    statuses = Act.statuses
+
+    def setUp(self):
+        Act.setUp(self)
+        patch = mock.patch.object(ownership, "share_hosts", lambda *a, **k: {"ksamods": SHARE_TABLE})
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_a_grouped_pull_request_with_one_attestation_is_armed(self):
+        self.api.pulls = [dict(pull_request(), user={"login": "ksamods-bot", "id": SHARE_BOT})]
+        identifiers = ["Zephyr", "Albatross", "MunRover"]
+        paths = [f"vehicles/{identifier}.toml" for identifier in identifiers]
+        entries = [
+            {"filename": path, "status": "added", "sha": f"{index + 1:040x}"} for index, path in enumerate(paths)
+        ]
+
+        for path, identifier in zip(paths, identifiers):
+            text = share_vehicle(identifier)
+            errors = []
+            check_schema.check_parsed(path, tomllib.loads(text), check_schema.validator(), errors)
+            self.assertEqual(errors, [])
+            self.assertEqual(check_hosts.check_document(path, tomllib.loads(text), {"ksamods": SHARE_TABLE}), [])
+            self.api.files[(path, "abc")] = text
+
+        changes = [check_scope.Change(e["filename"], e["status"], None, e["sha"]) for e in entries]
+        attestation = ownership.ATTESTATION.format(digest=ownership.change_digest(changes))
+        storage = {
+            attestation: json.dumps({
+                "host": "ksamods",
+                "accounts": {f"vehicle/{identifier}": f"u_{identifier}" for identifier in identifiers},
+            }),
+        }
+        for identifier in identifiers:
+            storage[f"owners/vehicle/{identifier}.json"] = json.dumps(
+                {"id": identifier, "type": "vehicle", "account": f"u_{identifier}"}
+            )
+        read = []
+
+        def share_file(table, path, user_agent=None):
+            read.append(path)
+            return storage.get(path)
+
+        listed = []
+        answer = self.api.get
+
+        def get(path, **query):
+            if path == "/pulls/5/files":
+                listed.append(query)
+                return entries
+            return answer(path, **query)
+
+        self.api.get = get
+        checks = [validate.Check("schema", validate.PASS, []).as_dict()]
+        with mock.patch.object(decide, "changed_paths", CHANGED_PATHS), mock.patch.object(
+            ownership, "share_file", share_file
+        ):
+            self.assertEqual(self.act(verdict(checks=checks, documents=paths)), 0)
+
+        self.assertEqual(len(listed), 1)
+        self.assertEqual(read.count(attestation), 1)
+        self.assertEqual(sorted(set(read)), sorted(storage))
+        self.assertEqual([status["state"] for status in self.statuses()], ["pending", "success"])
+        self.assertEqual(self.api.graphql_calls, [{"id": "PR_5"}])
+        comment = [p for _, where, p, _ in self.api.sent if where.endswith("/comments")][0]["body"]
+        self.assertNotIn("Owners of what", comment)
+
+    def test_an_edit_of_a_share_listing_names_no_owner(self):
+        path = "vehicles/MunRover.toml"
+        self.api.files = {(path, "main"): share_vehicle("MunRover"), (path, "abc"): share_vehicle("MunRover")}
+        notes = decide.owner_notes(self.api, pull_request(), [check_scope.Change(path, "modified")], "abc")
+        self.assertEqual(notes, [])
+
+
+DATA_KEY = "MCowBQYDK2VwAyEA" + "A" * 43 + "="
+DATA_TABLE = {
+    "kind": "share",
+    "data": "https://data.example.net/",
+    "downloads": ["https://files.example.net/"],
+    "key": DATA_KEY,
+    "bot": SHARE_BOT,
+    "types": ["vehicle"],
+}
+RECORD_URL = "https://github.com/KSAModding/content-index/actions/runs/42"
+INDEX_APP = "ksamodding-index"
+INDEX_BOT = {"login": f"{INDEX_APP}[bot]", "type": "Bot"}
+
+
+def fenced_blocks(text):
+    """The text of every code block in Markdown, read the way CommonMark closes a fence."""
+    blocks, lines, fence = [], [], None
+    for line in text.split("\n"):
+        if fence is None:
+            opened = re.match(r"(`{3,})", line)
+            if opened:
+                fence, lines = opened.group(1), []
+        elif re.fullmatch(f"{fence}`*", line):
+            blocks.append("\n".join(lines) + "\n")
+            fence = None
+        else:
+            lines.append(line)
+    return blocks
+
+
+class DataHostRecord(unittest.TestCase):
+    """A verified proof from a host with `data` leaves its attestation on the
+    pull request (RFC 0104, rule 30).
+    """
+
+    act = Act.act
+    statuses = Act.statuses
+
+    def setUp(self):
+        Act.setUp(self)
+        patch = mock.patch.object(ownership, "share_hosts", lambda *a, **k: {"ksadata": DATA_TABLE})
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.summary = self.root / "summary.md"
+        patch = mock.patch.dict("os.environ", {"GITHUB_STEP_SUMMARY": str(self.summary)})
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_a_verified_data_host_proof_is_recorded_in_the_comment_and_the_summary(self):
+        self.api.pulls = [dict(pull_request(), user={"login": "ksadata-bot", "id": SHARE_BOT})]
+        identifiers = ["Zephyr", "MunRover"]
+        paths = [f"vehicles/{identifier}.toml" for identifier in identifiers]
+        changes = [
+            check_scope.Change(path, "added", None, f"{index + 1:040x}") for index, path in enumerate(paths)
+        ]
+        for path, identifier in zip(paths, identifiers):
+            self.api.files[(path, "abc")] = share_vehicle(identifier).replace("ksamods", "ksadata")
+        attestation = ownership.ATTESTATION.format(digest=ownership.change_digest(changes))
+        text = json.dumps({"host": "ksadata", "accounts": {f"vehicle/{i}": f"u_{i}" for i in identifiers}})
+        files = {attestation: ownership.SignedFile(text, "c2lnbmF0dXJl\n", DATA_KEY)}
+        for identifier in identifiers:
+            record = json.dumps({"id": identifier, "type": "vehicle", "account": f"u_{identifier}"})
+            files[f"owners/vehicle/{identifier}.json"] = ownership.SignedFile(record, "b3duZXI=\n", DATA_KEY)
+        read = []
+
+        def share_file_signed(table, path, user_agent=None):
+            read.append(path)
+            return files.get(path)
+
+        checks = [validate.Check("schema", validate.PASS, []).as_dict()]
+        with mock.patch.object(decide, "changed_paths", lambda api, number: changes), mock.patch.object(
+            ownership, "share_file_signed", share_file_signed
+        ):
+            self.assertEqual(self.act(verdict(checks=checks, documents=paths), record_url=RECORD_URL), 0)
+
+        self.assertEqual(sorted(read), sorted(files))
+        self.assertEqual([status["state"] for status in self.statuses()], ["pending", "success"])
+        posted = [p["body"] for _, where, p, _ in self.api.sent if where == "/issues/5/comments"]
+        self.assertEqual(len(posted), 2)
+        record, comment = posted
+        self.assertTrue(record.startswith("<!-- content-index:ownership-record "))
+        self.assertIn(decide.EVIDENCE_POSTED, comment)
+        self.assertIn(f"[The ownership run]({RECORD_URL})", comment)
+        self.assertNotIn(text, comment)
+        entry = self.summary.read_text(encoding="utf-8")
+        for body in (record, entry):
+            self.assertIn(f"`{attestation}` of the share host `ksadata`", body)
+            self.assertIn(DATA_KEY, body)
+            self.assertEqual(fenced_blocks(body)[-2:], ["c2lnbmF0dXJl\n", text + "\n"])
+        self.assertEqual(entry.strip(), record)
+
+    def test_an_attestation_that_holds_a_fence_stays_inside_its_block(self):
+        text = json.dumps({"host": "ksadata", "accounts": {}, "note": "``` ```` end"}) + "\n"
+        evidence = ownership.Evidence("attestations/a.json", text, "c2ln\n", DATA_KEY)
+        result = ownership.Result(ownership.VERIFIED, "", "attestation", evidence=evidence)
+        [record] = decide.evidence_comments(5, result)
+        self.assertIn("\n`````json\n", record)
+        self.assertEqual(fenced_blocks(record), ["c2ln\n", text])
+
+    def test_an_attestation_of_the_largest_size_is_split_over_two_comments(self):
+        start, end, unit = '{"host": "ksadata", "accounts": {}, "note": "', '"}', "x" * 500 + "```` \u00fc "
+        room = ownership.MAX_SHARE_FILE - len(start) - len(end)
+        note = unit * (room // len(unit.encode("utf-8")))
+        text = start + note + "x" * (room - len(note.encode("utf-8"))) + end
+        self.assertEqual(len(text.encode("utf-8")), ownership.MAX_SHARE_FILE)
+        evidence = ownership.Evidence("attestations/a.json", text, "c2ln\n", DATA_KEY)
+        result = ownership.Result(ownership.VERIFIED, "", "attestation", evidence=evidence)
+        parts = decide.evidence_comments(5, result)
+        self.assertEqual(len(parts), 2)
+        for part in parts:
+            self.assertLessEqual(len(part.encode("utf-8")), decide.COMMENT_LIMIT)
+        # The text has no line break, so each block only adds the one that closes it.
+        joined = "".join(fenced_blocks(part)[-1][:-1] for part in parts)
+        self.assertEqual(joined, text)
+        self.assertIn(hashlib.sha256(text.encode("utf-8")).hexdigest(), parts[0])
+
+    def test_a_second_run_posts_only_what_is_missing_and_edits_nothing(self):
+        text = json.dumps({"host": "ksadata", "accounts": {}, "note": "x" * decide.COMMENT_LIMIT})
+        evidence = ownership.Evidence("attestations/a.json", text, "c2ln\n", DATA_KEY)
+        result = ownership.Result(ownership.VERIFIED, "", "attestation", evidence=evidence)
+        parts = decide.evidence_comments(5, result)
+        # A part that the author of the pull request posted is not the record.
+        api = RecordingApi(
+            comments=[
+                {"id": 1, "body": parts[0], "user": INDEX_BOT},
+                {"id": 2, "body": parts[1], "user": {"login": "someone", "type": "User"}},
+            ]
+        )
+        decide.post_evidence(api, 5, parts, INDEX_APP)
+        self.assertEqual(api.sent, [("POST", "/issues/5/comments", {"body": parts[1]}, None)])
+
+    def test_a_part_that_another_bot_posted_first_is_posted_again(self):
+        """The bot of a share host can be a GitHub App, post the markers first
+        and edit or delete its comments after the merge (rule 30).
+        """
+        text = json.dumps({"host": "ksadata", "accounts": {}, "note": "x" * decide.COMMENT_LIMIT})
+        evidence = ownership.Evidence("attestations/a.json", text, "c2ln\n", DATA_KEY)
+        result = ownership.Result(ownership.VERIFIED, "", "attestation", evidence=evidence)
+        parts = decide.evidence_comments(5, result)
+        other = {"login": "ksadata[bot]", "type": "Bot"}
+        # A person who authorized the App posts through it under their own account.
+        through_app = {"login": "someone", "type": "User"}
+        api = RecordingApi(
+            comments=[
+                {"id": 1, "body": parts[0], "user": other, "performed_via_github_app": {"slug": "ksadata"}},
+                {"id": 2, "body": parts[1], "user": through_app,
+                 "performed_via_github_app": {"slug": INDEX_APP}},
+                {"id": 3, "body": parts[1], "user": other},
+            ]
+        )
+        decide.post_evidence(api, 5, parts, INDEX_APP)
+        self.assertEqual(
+            api.sent,
+            [("POST", "/issues/5/comments", {"body": part}, None) for part in parts],
+        )
+
+    def test_without_an_app_slug_every_part_is_posted(self):
+        text = json.dumps({"host": "ksadata", "accounts": {}})
+        evidence = ownership.Evidence("attestations/a.json", text, "c2ln\n", DATA_KEY)
+        result = ownership.Result(ownership.VERIFIED, "", "attestation", evidence=evidence)
+        [part] = decide.evidence_comments(5, result)
+        api = RecordingApi(comments=[{"id": 1, "body": part, "user": INDEX_BOT}])
+        decide.post_evidence(api, 5, [part], "")
+        self.assertEqual(api.sent, [("POST", "/issues/5/comments", {"body": part}, None)])
+
+    def test_two_data_hosts_with_the_same_path_read_their_own_file(self):
+        other = dict(DATA_TABLE, data="https://data.example.org/")
+        path = "attestations/a.json"
+        read = []
+
+        def share_file_signed(table, path, user_agent=None):
+            read.append((table["data"], path))
+            return ownership.SignedFile(table["data"], "c2ln\n", DATA_KEY)
+
+        lookups = decide.OwnershipApi(RecordingApi())
+        with mock.patch.object(ownership, "share_file_signed", share_file_signed):
+            first = [lookups.share_file_signed(table, path) for table in (DATA_TABLE, other, DATA_TABLE, other)]
+            self.assertEqual(lookups.share_file(other, path), "https://data.example.org/")
+
+        self.assertEqual([found.text for found in first], [DATA_TABLE["data"], other["data"]] * 2)
+        self.assertEqual(read, [(DATA_TABLE["data"], path), (other["data"], path)])
+
+
+SHARE_BRANCH = "share/Boatmobile-20261102171548"
+BOATMOBILE = "vehicles/Boatmobile.toml"
+EARLIER_COMMIT = "d7e08c585b59e0274a875b75031814f4c0bd5e40"
+
+
+class EmptyChange(unittest.TestCase):
+    """A change that touches no file has nothing to merge, so it is closed."""
+
+    act = Act.act
+    statuses = Act.statuses
+    labelled = Act.labelled
+
+    def setUp(self):
+        Act.setUp(self)
+        patch = mock.patch.object(ownership, "share_hosts", lambda *a, **k: {"ksamods": SHARE_TABLE})
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.changed = []
+        self.counted = 0
+        self.commits = []
+        self.merged = []
+        answer = self.api.get
+
+        def get(path, **query):
+            if path == "/pulls/5":
+                return {"number": 5, "changed_files": self.counted}
+            if path.startswith("/commits?"):
+                self.api.asked.append((path, query))
+                return self.commits
+            if path == f"/commits/{EARLIER_COMMIT}/pulls":
+                return self.merged
+            return answer(path, **query)
+
+        self.api.get = get
+        patch = mock.patch.object(decide, "changed_paths", lambda api, number: list(self.changed))
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def from_share_host(self):
+        self.api.pulls = [
+            dict(pull_request(branch=SHARE_BRANCH), user={"login": "ksamods-gg[bot]", "id": SHARE_BOT})
+        ]
+        self.api.files = {(BOATMOBILE, "main"): share_vehicle("Boatmobile")}
+        return self.act_on(SHARE_BRANCH)
+
+    def act_on(self, branch):
+        """Act.act with another head branch than the fork branch it names."""
+        path = self.root / "verdict.json"
+        path.write_text(json.dumps(verdict(documents=[])), encoding="utf-8")
+        arguments = mock.Mock(
+            verdict=path, event="pull_request", head_repository=FORK, head_branch=branch,
+            head_sha="abc", repository=self.api.repository, run_url="", record_url="",
+            app_slug=INDEX_APP, dry_run=False,
+        )
+        return decide.act(self.api, arguments)
+
+    def closed(self):
+        return [payload for method, path, payload, _ in self.api.sent if (method, path) == ("PATCH", "/pulls/5")]
+
+    def comment(self):
+        return [p for _, where, p, _ in self.api.sent if where == "/issues/5/comments"][0]["body"]
+
+    def test_an_empty_change_from_a_share_host_closes_and_names_the_earlier_pull_request(self):
+        self.commits = [{"sha": EARLIER_COMMIT}]
+        self.merged = [
+            {"number": 279, "merged_at": None, "base": {"ref": "main"}},
+            {"number": 280, "merged_at": "2026-11-02T17:06:59Z", "base": {"ref": "main"}},
+        ]
+        self.assertEqual(self.from_share_host(), 0)
+
+        self.assertEqual(self.closed(), [{"state": "closed"}])
+        self.assertEqual([status["state"] for status in self.statuses()], ["success"])
+        self.assertIn(("/commits?path=vehicles%2FBoatmobile.toml&sha=main&per_page=1", {}), self.api.asked)
+        comment = self.comment()
+        self.assertIn("changes no file against `main`, so there is nothing to merge", comment)
+        self.assertIn(f"`main` already holds `{BOATMOBILE}`, which #280 last added or changed.", comment)
+        self.assertIn("is closed", comment)
+        self.assertEqual(self.labelled(), [decide.DUPLICATE_LABEL])
+        self.assertFalse(any(path.endswith("/requested_reviewers") for _, path, _, _ in self.api.sent))
+        self.assertEqual(self.api.graphql_calls, [])
+
+    def test_an_earlier_pull_request_that_cannot_be_found_is_not_named(self):
+        self.commits = [{"sha": EARLIER_COMMIT}]
+        self.merged = []
+        self.assertEqual(self.from_share_host(), 0)
+        self.assertEqual(self.closed(), [{"state": "closed"}])
+        comment = self.comment()
+        self.assertIn(f"`main` already holds `{BOATMOBILE}`.", comment)
+        self.assertNotIn("which #", comment)
+        self.assertEqual(self.labelled(), [decide.DUPLICATE_LABEL])
+
+    def test_a_failed_lookup_of_the_earlier_pull_request_still_closes(self):
+        def failing(path, **query):
+            raise urllib.error.HTTPError(path, 502, "bad gateway", {}, None)
+
+        get = self.api.get
+        self.api.get = lambda path, **query: failing(path) if path.startswith("/commits?") else get(path, **query)
+        self.assertEqual(self.from_share_host(), 0)
+        self.assertEqual(self.closed(), [{"state": "closed"}])
+        self.assertIn(f"`main` already holds `{BOATMOBILE}`.", self.comment())
+
+    def test_an_empty_change_from_anyone_else_closes_without_a_name(self):
+        self.assertEqual(self.act(), 0)
+        self.assertEqual(self.closed(), [{"state": "closed"}])
+        comment = self.comment()
+        self.assertIn("changes no file against `main`", comment)
+        self.assertNotIn("already holds", comment)
+        self.assertEqual(self.labelled(), [])
+        self.assertFalse(any(path.startswith("/commits") for path, _ in self.api.asked))
+
+    def test_a_share_host_branch_from_another_account_names_nothing(self):
+        self.api.files = {(BOATMOBILE, "main"): share_vehicle("Boatmobile")}
+        self.api.pulls = [pull_request(branch=SHARE_BRANCH)]
+        self.assertEqual(self.act_on(SHARE_BRANCH), 0)
+        self.assertEqual(self.closed(), [{"state": "closed"}])
+        self.assertNotIn("already holds", self.comment())
+
+    def test_a_listing_the_base_branch_does_not_hold_names_nothing(self):
+        self.api.pulls = [
+            dict(pull_request(branch=SHARE_BRANCH), user={"login": "ksamods-gg[bot]", "id": SHARE_BOT})
+        ]
+        self.api.files = {}
+        self.assertEqual(self.act_on(SHARE_BRANCH), 0)
+        self.assertEqual(self.closed(), [{"state": "closed"}])
+        self.assertNotIn("already holds", self.comment())
+        self.assertEqual(self.labelled(), [])
+
+    def test_a_count_of_changed_files_that_is_not_zero_goes_to_a_steward(self):
+        self.counted = 1
+        self.assertEqual(self.act(), 0)
+        self.assertEqual(self.closed(), [])
+        self.assertIn(decide.STEWARD_LABEL, self.labelled())
+        self.assertIn("touches no file at all", self.comment())
+
+    def test_a_pull_request_that_could_not_be_closed_goes_to_a_steward(self):
+        send = self.api.send
+
+        def refuse(method, path, payload, token=None):
+            if (method, path) == ("PATCH", "/pulls/5"):
+                raise urllib.error.HTTPError(path, 403, "forbidden", {}, None)
+            return send(method, path, payload, token)
+
+        self.api.send = refuse
+        self.assertEqual(self.act(), 0)
+        self.assertIn(decide.STEWARD_LABEL, self.labelled())
+        self.assertIn("could not be closed, so a steward closes it", self.comment())
+        self.assertNotIn("So this pull request is closed", self.comment())
+
+    def test_a_rejected_empty_change_is_not_closed(self):
+        self.assertEqual(self.act(verdict("reject")), 0)
+        self.assertEqual(self.closed(), [])
+        self.assertEqual([status["state"] for status in self.statuses()], ["failure"])
+
+    def test_a_change_that_touches_files_behaves_as_before(self):
+        self.changed = [check_scope.Change("listings/AutoStage.toml", "added")]
+        with mock.patch.object(decide.ownership, "verify", lambda *a, **k: UNVERIFIED):
+            self.assertEqual(self.act(), 0)
+        self.assertEqual(self.closed(), [])
+        self.assertFalse(any(path == "/pulls/5" for path, _ in self.api.asked))
+        self.assertEqual(self.labelled(), ["listing", decide.STEWARD_LABEL])
+        self.assertEqual([status["state"] for status in self.statuses()], ["success"])
+
+    def test_the_empty_decision_needs_a_passing_verdict(self):
+        empty = decide.Empty("main", BOATMOBILE, 280)
+        closing = decide.decide(verdict(), False, UNVERIFIED, empty=empty)
+        self.assertTrue(closing.close)
+        self.assertFalse(closing.needs_steward)
+        for outcome in ("reject", "could-not-evaluate"):
+            decision = decide.decide(verdict(outcome), False, UNVERIFIED, empty=empty)
+            self.assertFalse(decision.close)
+
+
+class RepeatedListing(unittest.TestCase):
+    def test_the_branch_names_the_listing_in_the_folder_of_each_type(self):
+        api = RecordingApi(files={("saves/Boatmobile.toml", "main"): share_vehicle("Boatmobile")})
+        pull = dict(pull_request(branch=SHARE_BRANCH), user={"login": "ksamods-gg[bot]", "id": SHARE_BOT})
+        table = dict(SHARE_TABLE, types=["vehicle", "save"])
+        found = decide.repeated_listing(api, pull, {"ksamods": table})
+        self.assertEqual(found, decide.Empty("main", "saves/Boatmobile.toml", None))
+        self.assertEqual(
+            [path for _, path, _ in api.reads], [BOATMOBILE, "saves/Boatmobile.toml"]
+        )
+
+    def test_a_branch_of_another_shape_names_nothing(self):
+        api = RecordingApi(files={(BOATMOBILE, "main"): share_vehicle("Boatmobile")})
+        for branch in ("share/Boatmobile", "Boatmobile-20261102171548", "share/../x-1", "share/a/b-1"):
+            pull = dict(pull_request(branch=branch), user={"login": "ksamods-gg[bot]", "id": SHARE_BOT})
+            self.assertEqual(decide.repeated_listing(api, pull, {"ksamods": SHARE_TABLE}), decide.Empty("main"))
 
 
 if __name__ == "__main__":

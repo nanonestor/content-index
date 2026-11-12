@@ -2,8 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { parseDocument, writeDocument } from "../js/toml.js";
-import { emptyForm, formFromDocument, documentFromForm } from "../js/model.js";
-import { newFileUrl, editUrl, prefillFromRepository, repositoryApiUrl, URL_LIMIT } from "../js/github.js";
+import { emptyForm, formFromDocument, documentFromForm, namedHosts, typeChoices, sectionsOf, nounOf } from "../js/model.js";
+import { newFileUrl, editUrl, pullRequestLink, copyAndOpen, prefillFromRepository, repositoryApiUrl, listingPath, packPath, documentPath, folderOf, rawListingUrl, URL_LIMIT, PASTE_NEW, PASTE_EDIT } from "../js/github.js";
 
 const LISTINGS = new URL("../../listings/", import.meta.url);
 
@@ -28,6 +28,24 @@ test("a changed listing keeps the order of its links and adds new ones at the en
   form.links.bugtracker = "b";
   form.extraLinks.push({ key: "wiki", url: "w" });
   assert.deepEqual(Object.keys(documentFromForm(form, base).links), ["forums", "homepage", "repository", "bugtracker", "wiki"]);
+});
+
+test("the standard link keys are fields of the form, not extra links", () => {
+  const links = { forums: "f", homepage: "h", repository: "r", spacedock: "s", bugtracker: "b", discussions: "d" };
+  const form = formFromDocument({ spec_version: 1, id: "M", type: "mod", links });
+  assert.deepEqual(form.extraLinks, []);
+  assert.deepEqual(form.links, links);
+  assert.deepEqual(documentFromForm(form, null).links, links);
+});
+
+test("an extra link that repeats a standard key leaves the field alone", () => {
+  const form = emptyForm();
+  form.links.homepage = "https://example.com";
+  form.links.forums = "https://forums.ahwoo.com/t/1";
+  form.extraLinks = [{ key: "homepage", url: "" }, { key: "forums", url: "https://elsewhere.example" }];
+  const links = documentFromForm(form, null).links;
+  assert.equal(links.homepage, "https://example.com");
+  assert.equal(links.forums, "https://forums.ahwoo.com/t/1");
 });
 
 test("keys the form does not edit are kept", () => {
@@ -80,14 +98,186 @@ test("two release hosts keep the authority, one host drops it", () => {
   assert.deepEqual(documentFromForm(form, null).releases, { github: "a/b" });
 });
 
+test("since is written next to a release host and dropped without one", () => {
+  const form = emptyForm();
+  Object.assign(form, { spacedock: "12", since: " 1.2 " });
+  assert.deepEqual(documentFromForm(form, null).releases, { spacedock: 12, since: "1.2" });
+  form.spacedock = "";
+  assert.equal(documentFromForm(form, null).releases, undefined);
+});
+
+test("since comes back from a loaded listing and is written after the hosts", () => {
+  const text = "[releases]\ngithub = \"a/b\"\nspacedock = 12\nauthority = \"github\"\nsince = \"0.5\"\n";
+  const base = parseDocument(text);
+  const form = formFromDocument(base);
+  assert.equal(form.since, "0.5");
+  const written = writeDocument(documentFromForm(form, base));
+  assert.match(written, /\[releases\]\ngithub = "a\/b"\nspacedock = 12\nauthority = "github"\nsince = "0\.5"\n/);
+});
+
+test("tag_prefix is written next to github and dropped without it", () => {
+  const form = emptyForm();
+  Object.assign(form, { github: "a/b", tagPrefix: " gatos- " });
+  assert.deepEqual(documentFromForm(form, null).releases, { github: "a/b", tag_prefix: "gatos-" });
+  Object.assign(form, { github: "", spacedock: "12" });
+  assert.deepEqual(documentFromForm(form, null).releases, { spacedock: 12 });
+});
+
+test("tag_prefix comes back from a loaded listing and is kept on an edit", () => {
+  const text = "[releases]\ngithub = \"a/b\"\nspacedock = 12\nauthority = \"github\"\ntag_prefix = \"gatos-v\"\nsince = \"0.5\"\n";
+  const base = parseDocument(text);
+  const form = formFromDocument(base);
+  assert.equal(form.tagPrefix, "gatos-v");
+  form.since = "0.4";
+  const written = writeDocument(documentFromForm(form, base));
+  assert.match(written, /\[releases\]\ngithub = "a\/b"\nspacedock = 12\nauthority = "github"\ntag_prefix = "gatos-v"\nsince = "0\.4"\n/);
+});
+
+test("a share host key is kept on an edit, with its authority and since", () => {
+  const text = "type = \"vehicle\"\n\n[releases]\nksamods = \"ExampleRover\"\ngithub = \"a/b\"\nauthority = \"ksamods\"\nsince = \"1.0\"\n";
+  const base = parseDocument(text);
+  const form = formFromDocument(base);
+  assert.deepEqual(form.shareHosts, [{ key: "ksamods", id: "ExampleRover" }]);
+  assert.equal(form.authority, "ksamods");
+  assert.deepEqual(documentFromForm(form, base).releases, base.releases);
+  form.github = "";
+  assert.deepEqual(documentFromForm(form, base).releases, { ksamods: "ExampleRover", since: "1.0" });
+});
+
+test("a share host next to an added GitHub repository writes the chosen share key as authority", () => {
+  const base = parseDocument("type = \"vehicle\"\n\n[releases]\nksamods = \"ExampleRover\"\n");
+  const form = formFromDocument(base);
+  assert.deepEqual(namedHosts(form), ["ksamods"]);
+  form.github = "a/b";
+  assert.deepEqual(namedHosts(form), ["github", "ksamods"]);
+  form.authority = "ksamods";
+  assert.deepEqual(documentFromForm(form, base).releases, { ksamods: "ExampleRover", github: "a/b", authority: "ksamods" });
+});
+
+test("a share host alone keeps its since and writes no authority", () => {
+  const base = parseDocument("type = \"vehicle\"\n\n[releases]\nksamods = \"ExampleRover\"\nsince = \"1.0\"\n");
+  const form = formFromDocument(base);
+  assert.deepEqual(documentFromForm(form, base).releases, { ksamods: "ExampleRover", since: "1.0" });
+  assert.deepEqual(emptyForm().shareHosts, []);
+});
+
 test("the new-file address carries the file until it gets too long", () => {
-  const short = newFileUrl("MyMod", "id = \"MyMod\"\n");
+  const short = newFileUrl(listingPath("MyMod"), "id = \"MyMod\"\n");
   assert.equal(short.filled, true);
   assert.equal(short.url, "https://github.com/KSAModding/content-index/new/main?filename=listings/MyMod.toml&value=id%20%3D%20%22MyMod%22%0A");
-  const long = newFileUrl("MyMod", "x".repeat(URL_LIMIT));
+  const long = newFileUrl(listingPath("MyMod"), "x".repeat(URL_LIMIT));
   assert.equal(long.filled, false);
   assert.equal(long.url, "https://github.com/KSAModding/content-index/new/main?filename=listings/MyMod.toml");
   assert.equal(editUrl("MyMod"), "https://github.com/KSAModding/content-index/edit/main/listings/MyMod.toml");
+});
+
+test("a new listing gets the plain link and the paste step once the link would pass the limit", () => {
+  const text = fs.readFileSync(new URL("fixtures/StarMap.toml", import.meta.url), "utf8");
+  const plain = "https://github.com/KSAModding/content-index/new/main?filename=listings/StarMap.toml";
+  const filled = `${plain}&value=${encodeURIComponent(text)}`;
+  assert.ok(filled.length > URL_LIMIT && filled.length < 5900, "the fixture sits between the limit and the link GitHub refused");
+  assert.deepEqual(pullRequestLink(listingPath("StarMap"), text), { url: plain, step: PASTE_NEW });
+  const short = "id = \"MyMod\"\n";
+  assert.deepEqual(pullRequestLink(listingPath("MyMod"), short), { url: newFileUrl(listingPath("MyMod"), short).url, step: "" });
+});
+
+test("a changed listing opens the edit page and says to replace the whole file", () => {
+  assert.deepEqual(pullRequestLink(listingPath("MyMod"), "id = \"MyMod\"\n", { id: "MyMod", type: "mod" }), {
+    url: "https://github.com/KSAModding/content-index/edit/main/listings/MyMod.toml",
+    step: PASTE_EDIT,
+  });
+});
+
+function vehicleForm() {
+  const form = emptyForm();
+  Object.assign(form, {
+    id: "ExampleRover",
+    type: "vehicle",
+    github: "Maxi/KSA-Rovers",
+    tagPrefix: "ExampleRover-",
+    name: "Example Rover",
+    authors: "Maxi",
+    abstract: "A six-wheel rover for the Moon.",
+    license: "CC-BY-4.0",
+    tags: ["rover"],
+  });
+  form.dependencies.push({ id: "ExamplePartsMod", kind: "required", min: "1.4.0", max: "" });
+  return form;
+}
+
+const schema = JSON.parse(fs.readFileSync(new URL("../../schemas/authored.schema.json", import.meta.url), "utf8"));
+
+test("a vehicle form writes the file at vehicles/<id>.toml that tools/test_vectors.py checks", () => {
+  const document = documentFromForm(vehicleForm(), null);
+  assert.equal(documentPath(document), "vehicles/ExampleRover.toml");
+  const text = fs.readFileSync(new URL(`fixtures/${documentPath(document)}`, import.meta.url), "utf8");
+  assert.equal(writeDocument(document), text);
+  assert.deepEqual(documentFromForm(formFromDocument(parseDocument(text)), null), document);
+  assert.equal(formFromDocument(document).type, "vehicle");
+});
+
+test("switching a vehicle form to mod and back keeps every field", () => {
+  const form = vehicleForm();
+  const vehicle = documentFromForm(form, null);
+  form.type = "mod";
+  form.loaderId = "StarMap";
+  const mod = documentFromForm(form, null);
+  assert.deepEqual(mod.loader, { id: "StarMap" });
+  assert.deepEqual(mod.dependencies, vehicle.dependencies);
+  form.type = "vehicle";
+  assert.deepEqual(documentFromForm(form, null), vehicle);
+});
+
+test("the page offers a type only when the deployed schema accepts it", () => {
+  assert.deepEqual(typeChoices(schema), ["mod", "mod-loader", "modpack", "vehicle", "save"]);
+  assert.deepEqual(typeChoices({ properties: { type: { enum: ["mod", "save"], not: { enum: ["save"] } } } }), ["mod"]);
+  assert.deepEqual(typeChoices({ properties: { type: { enum: ["mod", "plugin"] } } }), ["mod"]);
+  assert.deepEqual(typeChoices({}), []);
+});
+
+test("a vehicle or a save shows releases and dependencies, and hides the loader, the launch and the pack", () => {
+  for (const type of ["vehicle", "save"]) {
+    assert.deepEqual(sectionsOf(type), { releases: true, loader: false, launch: false, dependencies: true, pack: false, members: false, share: true }, type);
+    assert.equal(nounOf(type), type);
+  }
+  assert.equal(sectionsOf("mod").share, false);
+});
+
+test("a vehicle and a save live in their own folders, and a loaded one is edited there", () => {
+  assert.equal(documentPath({ id: "ExampleRover", type: "vehicle" }), "vehicles/ExampleRover.toml");
+  assert.equal(documentPath({ id: "MoonBase", type: "save" }), "saves/MoonBase.toml");
+  assert.equal(listingPath("A b", "constructor"), "listings/A b.toml");
+  assert.deepEqual(pullRequestLink(listingPath("ExampleRover", "vehicle"), "id = \"ExampleRover\"\n", { id: "ExampleRover", type: "vehicle" }), {
+    url: "https://github.com/KSAModding/content-index/edit/main/vehicles/ExampleRover.toml",
+    step: PASTE_EDIT,
+  });
+  assert.equal(editUrl("Moon Base", "save"), "https://github.com/KSAModding/content-index/edit/main/saves/Moon%20Base.toml");
+  assert.equal(rawListingUrl("ExampleRover", "vehicle"), "https://raw.githubusercontent.com/KSAModding/content-index/main/vehicles/ExampleRover.toml");
+  assert.deepEqual(["mod", "mod-loader", "modpack", "vehicle", "save"].map(folderOf), ["listings", "listings", "packs", "vehicles", "saves"]);
+});
+
+test("a loaded document offers only the types of its folder", () => {
+  const app = fs.readFileSync(new URL("../js/app.js", import.meta.url), "utf8");
+  assert.match(app, /option\.disabled = Boolean\(base\) && folderOf\(option\.value\) !== folderOf\(base\.type\);/);
+  assert.match(app, /const type = holder \? holder\.type : "mod";\n[^\n]*\n  const answer = await fetchListing\(id, type\);/);
+  assert.match(app, /const answer = await fetchListing\(base\.id, base\.type\);/);
+});
+
+test("the button copies the file before it opens GitHub", async () => {
+  const calls = [];
+  const clipboard = { writeText: async (text) => calls.push(["copy", text]) };
+  const tab = { opener: "page" };
+  const open = (url) => calls.push(["open", url]) && tab;
+  assert.deepEqual(await copyAndOpen("https://github.com/x", "id = 1\n", clipboard, open), { copied: true, opened: true });
+  assert.deepEqual(calls, [["copy", "id = 1\n"], ["open", "https://github.com/x"]]);
+  assert.equal(tab.opener, null);
+});
+
+test("GitHub still opens when the browser refuses the clipboard, and a blocked tab is reported", async () => {
+  const refused = { writeText: async () => { throw new Error("NotAllowedError"); } };
+  assert.deepEqual(await copyAndOpen("u", "t", refused, () => ({})), { copied: false, opened: true });
+  assert.deepEqual(await copyAndOpen("u", "t", undefined, () => ({})), { copied: false, opened: true });
+  assert.deepEqual(await copyAndOpen("u", "t", { writeText: async () => {} }, () => null), { copied: true, opened: false });
 });
 
 test("GitHub repository facts fill the form fields", () => {

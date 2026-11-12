@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/KSAModding/content-index/main/schemas/authored.schema.json",
   "title": "KSA content index: authored document",
-  "description": "One authored TOML document per listing or pack version, per RFC 0031, RFC 0035, RFC 0049, RFC 0058 and RFC 0067. Validate the parsed document.",
+  "description": "One authored TOML document per listing or pack version, per RFC 0031, RFC 0035, RFC 0049, RFC 0058, RFC 0067, RFC 0072, RFC 0079 and RFC 0085. Validate the parsed document.",
   "type": "object",
   "additionalProperties": false,
 
@@ -17,7 +17,7 @@
     },
     "type": {
       "description": "The content type. New types arrive by RFC and extend this enum.",
-      "enum": ["mod", "mod-loader", "modpack"]
+      "enum": ["mod", "mod-loader", "modpack", "vehicle", "save"]
     },
     "name": {
       "description": "The display name. Free choice of characters and length.",
@@ -59,9 +59,8 @@
     },
 
     "links": {
-      "description": "Listing links. The forums thread is required: it ties the listing to an Ahwoo account, is the tiebreaker in id disputes, and is the takedown tripwire.",
+      "description": "Listing links. The forums thread is required for a mod, a loader and a pack: it ties the listing to an Ahwoo account, is the tiebreaker in id disputes, and is the takedown tripwire.",
       "type": "object",
-      "required": ["forums"],
       "properties": {
         "forums": { "$ref": "#/$defs/forumsUrl" }
       },
@@ -104,14 +103,13 @@
       "description": "Game compatibility bounds, per RFC 0017. Ordering is by revision alone.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["game_min"],
       "properties": {
         "game_min": {
           "description": "Oldest game version known to work, written as the game displays it, or as a month such as 2026.7.",
           "$ref": "#/$defs/gameVersionBound"
         },
         "game_max": {
-          "description": "Newest tested game version. Absent means no known upper limit, which is the recommended default.",
+          "description": "Newest game version the content works with. Above it, clients block the content. Absent means no known upper limit, which is the recommended default.",
           "$ref": "#/$defs/gameVersionBound"
         },
         "os": {
@@ -139,13 +137,37 @@
           "minimum": 1
         },
         "authority": {
-          "description": "Which host defines which releases exist. Required when more than one host is named.",
-          "enum": ["github", "spacedock"]
+          "description": "Which host defines which releases exist. Required when more than one host is named. It is github, spacedock or the key of a share host the section names.",
+          "anyOf": [
+            { "enum": ["github", "spacedock"] },
+            { "$ref": "#/$defs/hostKey" }
+          ]
+        },
+        "since": {
+          "description": "The oldest version the watcher stamps, per RFC 0079. Every release of the authority at or above it is stamped with the listing facts that stand at stamp time. Absent means the watcher starts at the newest release of a new listing. It is not a host.",
+          "$ref": "#/$defs/versionBound"
+        },
+        "tag_prefix": {
+          "description": "Per RFC 0096, the text that the tag of every mod release on the github repository starts with. The watcher takes only the GitHub releases whose tag starts with it, compared case-sensitively, and reads the version from the rest of the tag. It filters github as the authority and as a mirror, and SpaceDock, which has no tags, ignores it. It is not a host.",
+          "title": "a non-empty ASCII string without whitespace",
+          "type": "string",
+          "pattern": "^[!-~]+(?![\\s\\S])"
         }
       },
+      "patternProperties": {
+        "^(?!(?:github|spacedock|authority|since)(?![\\s\\S]))[a-z][a-z0-9-]{1,31}(?![\\s\\S])": {
+          "description": "A share host of RFC 0094, named by its table in hosts.toml, with the id of the listing as the value. The schema cannot read hosts.toml, so it takes any key of the host key form ($defs/hostKey), and tools/check_hosts.py refuses one that hosts.toml does not register or whose host does not take the type.",
+          "$ref": "#/$defs/contentId"
+        }
+      },
+      "dependentRequired": { "tag_prefix": ["github"] },
       "anyOf": [
         { "required": ["github"] },
-        { "required": ["spacedock"] }
+        { "required": ["spacedock"] },
+        {
+          "$comment": "Holds only when the section has a key besides these, which additionalProperties lets through only as a share host key.",
+          "not": { "propertyNames": { "enum": ["github", "spacedock", "authority", "since", "tag_prefix"] } }
+        }
       ],
       "allOf": [
         {
@@ -181,11 +203,11 @@
         },
         "min": {
           "description": "Oldest loader version known to work, inclusive.",
-          "$ref": "#/$defs/semver"
+          "$ref": "#/$defs/versionBound"
         },
         "max": {
           "description": "Newest known-working loader version, inclusive. Absent means open, which is the recommended default.",
-          "$ref": "#/$defs/semver"
+          "$ref": "#/$defs/versionBound"
         }
       }
     },
@@ -329,12 +351,12 @@
       "items": { "$ref": "#/$defs/packEntry" }
     },
     "vehicles": {
-      "description": "Pinned vehicles. Defined now even though the vehicle type is not, because the entry shape is shared.",
+      "description": "Pinned vehicles. Each id names a listed vehicle (RFC 0085), and the mods it requires are pinned under mods.",
       "type": "array",
       "items": { "$ref": "#/$defs/packEntry" }
     },
     "saves": {
-      "description": "Pinned saves. Defined now even though the save type is not, because the entry shape is shared.",
+      "description": "Pinned saves. Each id names a listed save (RFC 0085), and the mods it requires are pinned under mods.",
       "type": "array",
       "items": { "$ref": "#/$defs/packEntry" }
     }
@@ -347,14 +369,12 @@
     "name",
     "authors",
     "abstract",
-    "license",
-    "links",
-    "compatibility"
+    "license"
   ],
 
   "allOf": [
     {
-      "$comment": "A mod: the game decides where it goes, so target is pinned and path is not the author's to set.",
+      "$comment": "A mod: the game decides where it goes, so RFC 0035 states the location as a default and neither target nor path is the author's to set.",
       "if": { "required": ["type"], "properties": { "type": { "const": "mod" } } },
       "then": {
         "properties": {
@@ -367,7 +387,7 @@
           "saves": { "not": {} },
           "install": {
             "properties": {
-              "target": { "const": "mods" },
+              "target": { "not": {} },
               "path": { "not": {} }
             }
           }
@@ -401,6 +421,36 @@
           "dependencies": { "not": {} },
           "install": { "not": {} },
           "provides": { "not": {} }
+        }
+      }
+    },
+    {
+      "$comment": "RFC 0085: a vehicle or a save carries no code and installs into a folder that the game names after name in its meta.toml, so it has no loader, nothing to provide, no pack keys and no place to choose. Its forums thread and game_min are optional, and every other type keeps them required (RFC 0079). A document without type takes the else.",
+      "if": { "required": ["type"], "properties": { "type": { "enum": ["vehicle", "save"] } } },
+      "then": {
+        "properties": {
+          "loader": { "not": {} },
+          "provides": { "not": {} },
+          "version": { "not": {} },
+          "released_at": { "not": {} },
+          "changelog": { "not": {} },
+          "mods": { "not": {} },
+          "vehicles": { "not": {} },
+          "saves": { "not": {} },
+          "install": {
+            "properties": {
+              "target": { "not": {} },
+              "path": { "not": {} },
+              "manages": { "not": {} }
+            }
+          }
+        }
+      },
+      "else": {
+        "required": ["links", "compatibility"],
+        "properties": {
+          "links": { "required": ["forums"] },
+          "compatibility": { "required": ["game_min"] }
         }
       }
     },
@@ -450,6 +500,7 @@
                 "items": {
                   "not": {
                     "title": "the game's own manifest, which no descriptor may claim",
+                    "type": "string",
                     "$comment": "Trailing dots and spaces are matched too: Windows strips them, so 'manifest.toml ' opens the same file.",
                     "pattern": "^[Mm][Aa][Nn][Ii][Ff][Ee][Ss][Tt][.][Tt][Oo][Mm][Ll][ .]*(?![\\s\\S])"
                   }
@@ -463,25 +514,42 @@
   ],
 
   "$defs": {
+    "hostKey": {
+      "$comment": "The table name of a share host in hosts.toml (RFC 0094). The pattern is the one of the patternProperties of releases and of schemas/hosts.schema.json, and tools/test_check_hosts.py keeps the copies equal.",
+      "title": "a host key of 2 to 32 lowercase ASCII letters, digits or '-', starting with a letter, and not github, spacedock, authority or since",
+      "type": "string",
+      "pattern": "^(?!(?:github|spacedock|authority|since)(?![\\s\\S]))[a-z][a-z0-9-]{1,31}(?![\\s\\S])"
+    },
     "contentId": {
       "$comment": "The trailing lookahead is a true end-of-input anchor. A bare $ would also match before a trailing newline, which would let an id carry one into a folder name.",
+      "title": "1 to 64 ASCII letters, digits, '.', '_' or '-', starting and ending with a letter or digit",
       "type": "string",
       "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,62}[A-Za-z0-9])?(?![\\s\\S])",
       "not": {
         "title": "a reserved name, compared up to the first dot",
+        "type": "string",
         "$comment": "Case-insensitive, because Windows treats CON.mod as a device too. Core is the game's own (Content/Core, exempted in ModLibrary.PrepareManifest).",
         "pattern": "^(?:[Cc][Oo][Rr][Ee]|[Cc][Oo][Nn]|[Pp][Rr][Nn]|[Aa][Uu][Xx]|[Nn][Uu][Ll]|[Cc][Oo][Mm][1-9]|[Ll][Pp][Tt][1-9])(?:[.]|(?![\\s\\S]))"
       }
     },
 
+    "versionBound": {
+      "$comment": "RFC 0072: one to three numbers, and a missing one reads as 0, so 0.5 is 0.5.0. The rest is SemVer 2.0.0, and like every authored version it takes no leading v.",
+      "title": "a version such as 1.2.3, 0.5 or 2.0.0-rc.1, with one to three numbers and no leading v",
+      "type": "string",
+      "pattern": "^(?:0|[1-9][0-9]*)(?:\\.(?:0|[1-9][0-9]*)){0,2}(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?(?![\\s\\S])"
+    },
+
     "semver": {
-      "$comment": "SemVer 2.0.0. No leading v: these are authored versions, not release tags, and only a tag gets its v stripped at stamp time.",
+      "$comment": "SemVer 2.0.0 with all three numbers, because a pack version and a pin name a release as the index stores it. No leading v: these are authored versions, not release tags, and only a tag gets its v stripped at stamp time.",
+      "title": "a version with all three numbers, such as 1.2.0 or 2.0.0-rc.1, and no leading v",
       "type": "string",
       "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?(?![\\s\\S])"
     },
 
     "gameVersionBound": {
       "$comment": "The full form the game displays, or a whole month. Year.Month.Build as a prefix is deliberately not offered (RFC 0017), and a build carrying a suffix is out of scope for compatibility.",
+      "title": "a game version as the game shows it, such as 2026.10.10.5554, or a month such as 2026.10",
       "type": "string",
       "pattern": "^[0-9]{4}\\.(?:1[0-2]|[1-9])(?:\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*))?(?![\\s\\S])"
     },
@@ -495,12 +563,14 @@
         {
           "not": {
             "title": "a path that leaves its anchor",
+            "type": "string",
             "pattern": "(?:^|/)[.]{1,2}(?:/|(?![\\s\\S]))"
           }
         },
         {
           "not": {
             "title": "a path through a reserved Windows device name",
+            "type": "string",
             "$comment": "A segment naming a device swallows every write on Windows, so a manager would report success and change nothing. Everything after the first dot is ignored when Windows resolves the device, and trailing dots and spaces are stripped, so all of those spellings are matched. Core is absent here: it is reserved as an id, not as a path.",
             "pattern": "(?:^|/)(?:[Cc][Oo][Nn]|[Pp][Rr][Nn]|[Aa][Uu][Xx]|[Nn][Uu][Ll]|[Cc][Oo][Mm][1-9]|[Ll][Pp][Tt][1-9])(?:[.][^/]*)?[ .]*(?:/|(?![\\s\\S]))"
           }
@@ -514,6 +584,7 @@
     },
 
     "url": {
+      "title": "an http or https URL, such as https://github.com/me/MyMod",
       "type": "string",
       "pattern": "^https?://[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::[0-9]{1,5})?(?:[/?#][^\\s\\u0000-\\u001f]*)?(?![\\s\\S])"
     },
@@ -580,17 +651,20 @@
     },
 
     "tag": {
+      "title": "lowercase letters and digits, with single - between words, such as parts or life-support",
       "type": "string",
       "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*(?![\\s\\S])"
     },
 
     "utcTimestamp": {
+      "title": "a UTC date and time such as 2026-08-05T12:00:00Z",
       "type": "string",
       "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?Z(?![\\s\\S])"
     },
 
     "configKeyPath": {
       "$comment": "Dot-separated from the document root. A configuration key whose own name contains a dot cannot be addressed in spec_version 1.",
+      "title": "key names joined by single dots, such as paths.game",
       "type": "string",
       "pattern": "^[^.\\u0000-\\u001f]+(?:\\.[^.\\u0000-\\u001f]+)*(?![\\s\\S])"
     },
@@ -627,11 +701,11 @@
         },
         "min": {
           "description": "Inclusive lower bound. For a conflict entry the bounds narrow the conflicting range.",
-          "$ref": "#/$defs/semver"
+          "$ref": "#/$defs/versionBound"
         },
         "max": {
           "description": "Inclusive upper bound. Absent means open.",
-          "$ref": "#/$defs/semver"
+          "$ref": "#/$defs/versionBound"
         },
         "any_of": {
           "description": "Alternatives, satisfied by any one of them. Replaces id.",
@@ -643,8 +717,8 @@
             "required": ["id"],
             "properties": {
               "id": { "$ref": "#/$defs/contentId" },
-              "min": { "$ref": "#/$defs/semver" },
-              "max": { "$ref": "#/$defs/semver" }
+              "min": { "$ref": "#/$defs/versionBound" },
+              "max": { "$ref": "#/$defs/versionBound" }
             }
           }
         }

@@ -6,12 +6,13 @@ If you want to argue about the format or the index itself, open a thread in [con
 
 ## Listing your content
 
-The [listing page](https://ksamodding.github.io/content-index/) writes or changes your listing step by step and checks it with the rules below before you open the pull request.
+The [listing page](https://ksamodding.github.io/content-index/) writes or changes your listing section by section, starting from your GitHub repository, and checks it with the rules below before you open the pull request.
+Its Dependencies section shows what the `mod.toml` of your newest stamped release, or of the release zip you select, already declares, finds a listed mod by name, id or author, and offers its stamped releases as bounds.
 
 1. Write your authored document following [RFC 0031](https://github.com/KSAModding/content-manager-design/blob/main/rfcs/0031-content-metadata-format.md).
    The worked examples in [`examples/`](https://github.com/KSAModding/content-manager-design/tree/main/examples) are real listings you can copy from.
 2. Put it at `listings/<id>.toml`, where `<id>` is the folder name your content installs as.
-   A mod pack goes to `packs/<id>/<version>.toml`.
+   A mod pack goes to `packs/<id>/<version>.toml`, a vehicle to `vehicles/<id>.toml` and a save to `saves/<id>.toml`, see [Listing a vehicle or a save](#listing-a-vehicle-or-a-save).
 3. Check it before you open anything, which saves you a round trip through CI:
 
    ```sh
@@ -33,14 +34,23 @@ The [listing page](https://ksamodding.github.io/content-index/) writes or change
 
    A release archive can be at most 4 GiB, and the release check and the watcher reject a larger one.
 
-4. Open a pull request that adds exactly one file.
-   One document merges itself. A pull request carrying two, or carrying anything besides a document, is valid but waits for a steward.
+4. Open a pull request that adds your document, or several of them.
+   Up to 15 documents merge themselves, as long as ownership verifies for every one of them: control of the release host for a listing, the account in `packs/<id>/owner.json` for a pack.
+   A pull request that carries anything besides documents and the owner record of a new pack, or more than 15 documents, is valid but waits for a steward.
+
+## Code mods in an instance
+
+A manager such as Borea can start your mod in an instance, which is a game profile in a folder of its own and not in `Documents/My Games/Kitten Space Agency`.
+A code mod that reads the profile by that hardcoded path then finds an empty or wrong folder.
+[Make your mod work in a Borea instance](https://github.com/KSAModding/Borea/blob/main/docs/mod-authors.md) tells you why and what to use instead.
 
 ## The license field
 
 `license` is an SPDX license expression.
 For one license, write its identifier from the [SPDX license list](https://spdx.org/licenses/), such as `MIT` or `CC-BY-SA-4.0`.
 The identifier is the short form with hyphens, so `CC BY-SA 4.0` is not valid.
+The identifier names a version where the license has one, so `GPL` alone is not valid, and you write `GPL-3.0-only` or `GPL-3.0-or-later` instead.
+When an identifier is not on the list, the check names the identifiers that are close to it.
 
 When parts of your content have different licenses, join them with `AND`.
 For example, code under GPL-2.0 and data files under CC BY-SA 4.0:
@@ -50,7 +60,7 @@ license = "GPL-2.0-only AND CC-BY-SA-4.0"
 ```
 
 When the user may choose one of several licenses, join them with `OR`, such as `MIT OR Apache-2.0`.
-A comma does not join licenses.
+A comma does not join licenses, and two identifiers written next to each other do not either, so `MIT Apache-2.0` is refused.
 
 A license that is not on the SPDX list can be named as `LicenseRef-` followed by a name of your choice, such as `LicenseRef-MyModLicense`.
 An image can have its own `license` in its record when its terms differ from those of the content, see [Images](#images).
@@ -85,6 +95,16 @@ When the image breaks a limit, the tool names the limit and prints no record.
 By adding an image record, you state that you have the right to publish the image and to let clients fetch, display and cache it under the record's `license`, or under the document's `license` when the record names none.
 When the image is third-party work, or its license requires credit, a license notice or a link to the original, put that into the record's `attribution` and `source`.
 
+## Version bounds
+
+A `min` or `max` on `[loader]`, on a dependency, or on an `any_of` alternative is a version, such as `1.2.3`.
+You can leave out the last numbers, per [RFC 0072](https://github.com/KSAModding/content-manager-design/blob/main/rfcs/0072-version-forms.md).
+A missing number reads as `0`, so `min = "0.5"` means `0.5.0` and `min = "1"` means `1.0.0`.
+A pre-release works the same way, so `1.2-rc.1` means `1.2.0-rc.1`.
+Four numbers, a number with a leading zero such as `01.2`, and a leading `v` are refused.
+
+A pack pins each member to its full version, such as `0.7.0`, and its own `version` has all three numbers too.
+
 ## Launching a mod loader
 
 A `mod-loader` listing names the file a player starts in `[provides].launch`.
@@ -104,22 +124,136 @@ The platform names are `windows`, `linux` and `macos`.
 Leave out `runtime` when your loader has its own executable on that platform.
 Every `launch` must be in your release archive, or the release is rejected.
 
+## Archives for one platform
+
+A mod or a mod loader that you release on GitHub can add a smaller archive for each platform, for example when its runtime files differ between Windows and Linux.
+Name each one `<stem>-windows.zip`, `<stem>-linux.zip` or `<stem>-macos.zip`, where `<stem>.zip` is the archive of the release, and add it to the same release.
+An underscore instead of the hyphen works too, and the case does not matter.
+Add only one archive per platform, because two for the same platform reject the release.
+The archive for every platform, `<stem>.zip`, stays required, because it is the file for a platform that has no archive of its own and for a manager that does not read platform archives.
+A manager downloads the archive of its own platform when the release has one that is not gone from its host, and otherwise `<stem>.zip`, per [RFC 0112](https://github.com/KSAModding/content-manager-design/blob/main/rfcs/0112-per-platform-downloads.md).
+
+Each platform archive must hold the same mod folder as `<stem>.zip`, and for a mod, the same dependencies in its `mod.toml`.
+For a mod loader, it must also hold every `launch` file that applies to its platform.
+The index rejects the release when one of these differs.
+A listing on SpaceDock, a release by pull request, a vehicle and a save take no platform archives, and their releases keep today's rules for which zip is used.
+
+## Listing a vehicle or a save
+
+A vehicle or a save is a folder the game wrote, shared with the mods it needs, per [RFC 0085](https://github.com/KSAModding/content-manager-design/blob/main/rfcs/0085-vehicles-and-saves.md).
+Its document goes to `vehicles/<id>.toml` or `saves/<id>.toml`.
+The id follows the same rules as every id and is in the same namespace, and it is never compared with `name` in the `meta.toml` of the folder, because a real name has spaces.
+
+The document is a mod listing without `[loader]`:
+
+```toml
+spec_version = 1
+id = "ExampleRover"
+type = "vehicle"
+name = "Example Rover"
+authors = ["Maxi"]
+abstract = "A six-wheel rover for the Moon."
+license = "CC-BY-4.0"
+
+[releases]
+github = "Maxi/KSA-Rovers"
+tag_prefix = "ExampleRover-"
+
+[[dependencies]]
+id = "ExamplePartsMod"
+kind = "required"
+min = "1.4.0"
+```
+
+- `links.forums` is optional, because the forum may have no place for vehicles and saves. Without it, the account on the release host ties the listing to you, see [POLICY.md](POLICY.md#the-forums-link).
+- `[compatibility]` is optional. Without `game_min`, the watcher takes it from `version` in the `meta.toml` in your zip, which is the game build that wrote the folder. A new game build often breaks older vehicle and save files, so lower `game_min` only when you know that an older build loads the file.
+- `[[dependencies]]` names the mods the vehicle or the save needs, and only mods. A client that shares one fills this list from the mods of its instance, with `min` at the version it installed and no `max`. Check the list, because the index cannot read it out of the file, and add a mod that only changes how parts behave as `recommends`.
+- `[install]` takes only `root`, `steps` and `uninstall`. The game decides where the folder goes, and `name` in its `meta.toml` decides the name of the folder.
+
+When a game build or an update of a mod breaks a released vehicle or save, set `game_max` or a dependency `max` on that release with an [amendment](https://github.com/KSAModding/content-index-releases/blob/main/CONTRIBUTING.md#an-amendment) in content-index-releases.
+
+The zip holds the folder as the game wrote it: one top-level directory named after `name` in its `meta.toml`, with `meta.toml` and `vehicle.xml` in it, or `universe.xml` for a save.
+The checks and the watcher refuse a release when:
+
+- `meta.toml` does not parse as TOML, because the game then does not start.
+- `name` breaks the [name rule](schemas/README.md#save-and-vehicle-names) of the game.
+- The top-level directory has another name than `name`, also in another case.
+- `vehicle.xml` or `universe.xml` is missing, has another case, or is not well-formed XML.
+- The listing has no `game_min`, and `version` in `meta.toml` is not a game build.
+- Another listing of the same type already installs a folder with the same name, compared without case, because a player could not have both.
+
+Other files in a vehicle folder get a note, because the game drops them when it saves the vehicle again.
+A save is different: the game writes only `meta.toml` and `universe.xml` when it saves, and a mod writes its own state beside them, so every other file in a save folder is the state of a mod.
+It installs as it is, with no note, so a save that carries something harmful in such a file is grounds for a [takedown](POLICY.md#filing-a-takedown).
+The [listing page](https://ksamodding.github.io/content-index/) checks a zip you select with the same rules, except the folder of another listing, which only the checks and the watcher compare.
+
+A vehicle or a save needs a release host that proves who shares it, and you have these paths:
+
+- A GitHub repository of your own under `[releases] github`. One repository can hold many vehicles and saves, each with a `tag_prefix` of its own, see [A repository with other releases](#a-repository-with-other-releases). The proof is the same as for any repository, and a marker file that names only your username covers every vehicle and save in it.
+- A share host that [`hosts.toml`](hosts.toml) registers for the type, named under `[releases]` by its key with the id of the listing as the value. You publish through the host, and it opens the pull request, see [Proving you control the release host](#proving-you-control-the-release-host).
+- No `[releases]` at all. Each release then enters by a [release pull request](https://github.com/KSAModding/content-index-releases/blob/main/CONTRIBUTING.md#a-release) in content-index-releases.
+
 ## Claiming and updating a pack
 
-A first pack claim adds the pack version and `packs/<id>/owner.json` in the same pull request.
-The owner record names the pull request author's GitHub login and numeric account id.
-A steward must accept this first claim because a pack has no release host that can prove ownership.
+A pack id is first come, first served, as a listing id is, per [RFC 0080](https://github.com/KSAModding/content-manager-design/blob/main/rfcs/0080-pack-claims-and-members.md).
+To claim one, open one pull request that adds the first pack version and `packs/<id>/owner.json` with your GitHub login and numeric account id, see [packs/README.md](packs/README.md) for an example.
+When no listing or pack holds the id yet, compared without case, and the checks pass, the pull request merges itself and the id is yours.
+An owner record that names another account than the one that opened the pull request is rejected.
 
-The accepted owner record is read only from the base branch.
-Changing owner data in a pull request cannot grant ownership or make that pull request merge itself.
+You can open the pull request with the version alone.
+When a first claim has no `owner.json`, the comment of the bot gives the exact content of the file and a link that opens GitHub's new-file page for `packs/<id>/owner.json` on the branch of your pull request, with the content filled in.
+Commit the file there, and the checks run again.
+If GitHub opens an empty file, paste the content from the comment.
+The checks stay red until the file is there.
+The checks of a pull request from a new GitHub account can wait until a steward starts them.
 
-After the first claim, the recorded GitHub account can add one new version document at a time and that pull request can merge itself.
+The [listing page](https://ksamodding.github.io/content-index/) writes the first version of a new pack when you set the type to `modpack`.
+You pick each member from the listed mods and their releases that are not yanked and still download, and the page opens GitHub at `packs/<id>/<version>.toml`.
+A release whose download is gone from its host is not offered, and a loaded pin of it stays with a note that names the member, the version and the date.
+The page checks the members as the index does, with the same messages, against the index snapshot.
+The picker marks a release that "cannot be pinned, because it needs" a mod that is not listed.
+"Add the missing dependencies" pins each required dependency that no member pins, at its newest stable release inside the bounds, and when a member needs one of several mods, the choice stays with you.
+A note marks a member with a newer release, and its "Pin" button shows only when the other pins accept that release.
+The snapshot follows the index with a delay, so a release stamped after the last snapshot build shows as not stamped on the page until the next build.
+"Check the id" tells you whether the pack id is free, yours, or held by another account, in which case a steward decides.
+For a free id, it also writes `owner.json` from your GitHub login and numeric account id, to copy or to save.
+[Borea](https://ksamodding.github.io/Borea/) is getting a pack editor that opens the pull request with both files at once ([Borea#566](https://github.com/KSAModding/Borea/issues/566)).
+For a later version, choose "Change a listed one" and load the pack id.
+The page loads the newest version from `main` and raises the version above every version file there, retracted ones included, and it sets the release time to now.
+It shows the reason of a retracted version, marks a member that has a newer release at least as stable as its pin, and opens GitHub at the new file.
+"Copy the member list for your forum thread" copies the member lines that the forum rules ask a pack thread for.
+
+When somebody else says a pack id is theirs, they use the [id dispute form](https://github.com/KSAModding/content-index/issues/new?template=id-dispute.yml), as for a mod.
+The forums thread that announced the pack first is the tiebreaker, see [POLICY.md](POLICY.md#filing-an-id-dispute).
+
+For a later version, the owner record is read only from the base branch, by its numeric account id.
+A pull request can add an owner record only together with the first version of its pack.
+A pull request that changes or deletes an owner record never merges itself, and a steward merges it, for example for a handover.
+
+Open the pull requests for later versions from the same account, and they merge themselves.
 An accepted pack version is immutable and cannot be edited, renamed, or deleted.
 Publish a corrected version in a new file.
 A steward retracts a broken version through its version-scoped entry in `index-status.toml`.
 
+Every entry in `[[mods]]` names a listed mod, in its canonical spelling and not delisted, at a release the index has stamped and that is not yanked.
+The pinned set must also be complete:
+
+- Every `required` dependency of a pinned release names another pinned mod whose pinned version is inside the dependency's bounds. For an `any_of` entry, one of its members is enough.
+- No pinned release has a `conflict` entry that matches another pinned mod.
+- `optional`, `recommends` and `suggests` dependencies are not required. Pin one when you want it in the pack.
+
+The checks read the dependencies from the stamped release files, so a dependency the stamper derived counts like one the mod author wrote.
+A mod's loader is not a dependency, and a pack does not pin it.
+The checks refuse every other entry and name it, and they name each missing or conflicting mod together with the pinned release that needs it.
+An entry in `[[vehicles]]` names a listed vehicle, and an entry in `[[saves]]` a listed save, with the same rules, and the mods that a pinned vehicle or save requires are pinned in `[[mods]]` ([RFC 0085](https://github.com/KSAModding/content-manager-design/blob/main/rfcs/0085-vehicles-and-saves.md)).
+A pinned mod that is `disputed` passes with a warning, and a client warns about it too.
+When a pinned release is yanked or a pinned mod is delisted later, the accepted pack version stays as it is, and a client warns and installs what it can.
+
+When a pinned mod has newer releases, test them and publish a new pack version.
+When a mod author asks to leave your pack, publish a version without that mod, see [POLICY.md](POLICY.md#leaving-a-pack).
+
 Checks then validate the document, inspect your latest release archive, and verify that you control the release host the listing points at.
-The pull request is then labelled `listing` or `pack`, which says which kind of document it changes, and one that changes both carries both labels.
+The pull request is then labelled `listing`, `vehicle`, `save` or `pack`, which says which kind of document it changes, and one that changes several kinds carries each of their labels.
 
 When everything is green and ownership verified, the pull request merges itself.
 When ownership cannot be verified automatically, a steward looks instead.
@@ -130,19 +264,36 @@ Each proof is something only somebody with access to the release repository can 
 
 Any one of the three is enough, and the first that applies is used:
 
-1. The repository in `[releases]` is owned by your own account, and is not a fork.
+1. The repository in `[releases]` is owned by your own account.
 2. The repository carries the topic `ksa-index-<your-github-username>`, lowercased, per [RFC 0038](https://github.com/KSAModding/content-manager-design/blob/main/rfcs/0038-repository-topic-ownership-proof.md).
    So `Maximilian-Nesslauer` sets `ksa-index-maximilian-nesslauer`.
    One topic covers every listing that points at that repository, and it is the easy path for an organization-owned repository.
 3. The repository contains `.github/ksa-content-index.toml` naming the listing id and your username.
+   A file that names only your username covers every listing that points at that repository, such as several vehicles or saves with a `tag_prefix` each.
 
-A SpaceDock release host is verified through the mod's source code link.
+A fork proves control through the first two proofs only, per [RFC 0079](https://github.com/KSAModding/content-manager-design/blob/main/rfcs/0079-author-freedom.md).
+The owner of a fork is the account that forked it, and GitHub copies no topic to a fork.
+A marker file in a fork does not count, because a fork inherits the files of the repository it was forked from.
+A listing from a fork, for example the continuation of an abandoned mod, needs an id of its own, because the original listing keeps its id.
+Pointing an existing listing at a fork is a change of release host, see [Changing a listing that already exists](#changing-a-listing-that-already-exists).
+
+A SpaceDock release host is verified through the mod's source code link, per [RFC 0079](https://github.com/KSAModding/content-manager-design/blob/main/rfcs/0079-author-freedom.md).
 Set that link on the mod's SpaceDock page to your GitHub repository, and prove control of the repository with one of the three proofs above.
 
 So the mod's authors decide which repository stands for the mod, and whoever controls that repository can list it.
-The linked repository must not be a fork.
+A linked fork proves control only through its owner or the topic, as above.
 When you rename or transfer it, update the link on SpaceDock, because the redirect rule below covers only a repository the listing itself names.
 A SpaceDock mod with no source code link, or with a link that does not name a GitHub repository, still waits for a steward.
+When SpaceDock does not answer, the check reaches no verdict, and the pull request also waits for a steward.
+Release and amendment pull requests in content-index-releases use the same proof.
+
+A listing on a share host, a host that [`hosts.toml`](hosts.toml) registers per [RFC 0094](https://github.com/KSAModding/content-manager-design/blob/main/rfcs/0094-share-host.md), needs no proof that you set up.
+The host proves the owner in one of two ways.
+It opens the pull request from its own account and publishes an attestation of the exact change, in its storage repository or, for a host without GitHub storage, under its `data` URL with the signature in a `.sig` file beside it.
+Or you link your GitHub account to your account on the host and open the pull request yourself.
+For a host with `data`, the ownership check accepts the attestation only when the signature is valid for the `key` of the host, and copies the attestation and its signature into comments of their own on the pull request, which no later run edits, so the proof stays readable after the host is gone.
+A pull request that changes one byte after the host attested it does not verify.
+An edit is verified against the host that the listing already names, as for every other host.
 
 ## Changing a listing that already exists
 
@@ -160,12 +311,62 @@ Handing a listing to somebody:
 - **You transfer the repository itself.** The redirect above carries your consent, and the release host moved with it, so the new owner updates the listing without a steward.
 - **You point the listing at a separate repository.** Nobody controls both hosts, so a steward applies it, unless you first put the incoming account's proof on your own repository, for example their `ksa-index-<username>` topic.
 
+An edit to `[compatibility]`, the `[loader]` bounds or `[[dependencies]]` also reaches your newest release that is neither yanked nor `dev`, with the next watcher tick after the merge, per [RFC 0081](https://github.com/KSAModding/content-manager-design/blob/main/rfcs/0081-listing-narrowing.md).
+While a pull request that adds a release of your listing is open in content-index-releases, the edit waits and lands in that release.
+Older releases keep their stamp, and an amendment pull request to content-index-releases can change them.
+The comment on your pull request names the release before you merge.
+If you edit the listing for a release that is not out yet, tag it first, or open its release pull request first when your listing has no `[releases]`.
+
+When somebody else changes your listing or your pack, the bot's comment on their pull request mentions you, see [who is told](POLICY.md#who-is-told).
+
 ## After you are listed
 
 You touch your authored document again only when the facts change: a new dependency bound, a new link, or the day you stop maintaining it.
 Releases are picked up on their own.
 
 Correcting metadata is a change here, not a new release of your content.
+
+## Listing your older releases
+
+When your listing is new, the watcher stamps your newest release and then every release after it.
+To get older releases into the index too, set `since` under `[releases]` to the oldest version you want, per [RFC 0079](https://github.com/KSAModding/content-manager-design/blob/main/rfcs/0079-author-freedom.md):
+
+```toml
+[releases]
+github = "owner/repository"
+since = "1.2"
+```
+
+The watcher then also stamps every release of the authority host whose version is at least `since` and that is not in the index yet.
+`since` is a version in the forms of [Version bounds](#version-bounds), so `1.2` means `1.2.0`, and `latest` or a leading `v` is refused.
+`since` is not a release host, so it does not count when `[releases]` names more than one host, and with several hosts it applies to the one that `authority` names.
+Each older release goes through the same checks as every stamp, and a release that fails them is reported in your listing's issue without stopping the others.
+A long back catalogue arrives over several ticks of the watcher.
+
+The watcher stamps an older release with the facts your listing states at the time of the stamp, such as the game versions, the loader bounds and the dependencies.
+So a bound that you wrote for your newest release lands on the old ones too.
+When an old release needs other facts, you correct them with an [amendment](https://github.com/KSAModding/content-index-releases/blob/main/CONTRIBUTING.md#an-amendment) in content-index-releases, which can make the release stricter or wider.
+
+A lower `since` later stamps more releases.
+A higher `since` removes no release that is already stamped.
+
+## A repository with other releases
+
+When your GitHub repository also publishes releases that are not releases of your mod, such as tools or images, set `tag_prefix` under `[releases]` to the text that every tag of a mod release starts with, per [RFC 0096](https://github.com/KSAModding/content-manager-design/blob/main/rfcs/0096-tag-prefix.md):
+
+```toml
+[releases]
+github = "owner/repository"
+tag_prefix = "mymod-"
+```
+
+The watcher then takes only the releases whose tag starts with `tag_prefix`, with upper and lower case as written, and reads the version from the rest of the tag, so `mymod-v1.2.0` and `mymod-1.2.0` are both `1.2.0`.
+Every other release of the repository is not a release of your mod, so it is never stamped and never reported.
+`tag_prefix` is text without spaces, it needs `github` next to it, and SpaceDock, which has no tags, ignores it.
+`since` compares with the version of the rest of the tag.
+A `tag_prefix` that no release of the repository starts with is refused, so a typo does not hide every release.
+When you change the form of your tags, change `tag_prefix` too, or the watcher stamps nothing new.
+A changed `tag_prefix` changes no release that is already stamped.
 
 ## no rename possible
 
@@ -182,7 +383,7 @@ Do not ask for a delisting instead. That leaves a tombstone carrying the id and 
 ## Takedowns and disputes
 
 Use the issue forms, and read [POLICY.md](POLICY.md) for what a steward does with them.
-A steward decides, and the required forums link is the tiebreaker for who claimed an id first.
+A steward decides, and the forums link is the tiebreaker for who claimed an id first, or for a vehicle or a save without one, the account on its release host.
 
 ## Licensing your contribution
 

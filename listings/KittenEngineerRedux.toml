@@ -1,0 +1,75 @@
+spec_version = 1
+id = "KittenEngineerRedux"
+type = "mod"
+name = "Kitten Engineer Redux"
+authors = ["BarneyTheGod"]
+abstract = "Utility mod for KSA that mirrors KSP's Kerbal Engineer Redux."
+description = """
+Kitten Engineer Redux is a utility readout mod for Kitten Space Agency. It aims to mirror the KSP mod "Kerbal Engineer Redux" by providing the player with useful vehicle data inside of the VAB and during flight.
+
+![editor](ksa-image:editor)
+![flight-01](ksa-image:flight-01)
+![flight-02](ksa-image:flight-02)
+![flight-03](ksa-image:flight-03)"""
+license = "MIT"
+tags = ["gameplay", "user-interface", "tools"]
+
+[releases]
+github = "BarneyCompiler/Kitten-Engineer-Redux"
+spacedock = 4043
+authority = "github"
+
+[links]
+forums = "https://forums.ahwoo.com/forums/kitten-space-agency/mod-releases/kitten-engineer-redux-ker.443/"
+homepage = "https://github.com/BarneyCompiler/Kitten-Engineer-Redux"
+repository = "https://github.com/BarneyCompiler/Kitten-Engineer-Redux"
+spacedock = "https://spacedock.info/mod/4043/Kitten%20Engineer%20Redux"
+bugtracker = "https://github.com/BarneyCompiler/Kitten-Engineer-Redux/issues"
+
+[compatibility]
+game_min = "2026.11.10.5801"
+
+[loader]
+id = "StarMap"
+min = "0.5.4"
+
+[images.icon]
+url = "https://i.imgur.com/YQXQrtm.png"
+sha256 = "3c528ca59bbb0462858f7d39dd0553ba5490a485fec14e1f682e15570a37eebc"
+width = 512
+height = 512
+size = 183766
+license = "MIT"
+attribution = "BarneyTheGod"
+
+[[images.description]]
+id = "flight-01"
+url = "https://i.imgur.com/v4gZpFp.jpeg"
+sha256 = "a83c91a5badd97ef65796ebcd3abd35fd46763e122af55691477ab2750cc4f5c"
+width = 2047
+height = 1108
+size = 445446
+
+[[images.description]]
+id = "flight-02"
+url = "https://i.imgur.com/LNVQ9Xi.jpeg"
+sha256 = "fcccccf710f671bd49831b584dc77dc546256f5c10738a5c964ee75cf769cd58"
+width = 2036
+height = 1108
+size = 487613
+
+[[images.description]]
+id = "flight-03"
+url = "https://i.imgur.com/JH761vg.jpeg"
+sha256 = "1c2bd8862f4fe43e8c3bbd6d46fce57de4e8cebce61c7d571a264443a3dbc0ee"
+width = 2034
+height = 1108
+size = 566322
+
+[[images.description]]
+id = "editor"
+url = "https://i.imgur.com/qszb6de.jpeg"
+sha256 = "0a5245271b71c68fc2b01cf499195623a8ac8b5ed8d54f14de373edb05b3d5a0"
+width = 2037
+height = 1108
+size = 239355

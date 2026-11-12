@@ -1,8 +1,8 @@
 # Schemas
 
-`authored.schema.json` is the machine-readable form of the authored document defined by [RFC 0031](https://github.com/KSAModding/content-manager-design/blob/main/rfcs/0031-content-metadata-format.md) and extended by [RFC 0035](https://github.com/KSAModding/content-manager-design/blob/main/rfcs/0035-content-install-descriptor.md), [RFC 0049](https://github.com/KSAModding/content-manager-design/blob/main/rfcs/0049-instance-handover.md), [RFC 0058](https://github.com/KSAModding/content-manager-design/blob/main/rfcs/0058-listing-images-and-dates.md) and [RFC 0067](https://github.com/KSAModding/content-manager-design/blob/main/rfcs/0067-per-platform-launch.md), and amended by [RFC 0065](https://github.com/KSAModding/content-manager-design/blob/main/rfcs/0065-icon-center-crop.md).
+`authored.schema.json` is the machine-readable form of the authored document defined by [RFC 0031](https://github.com/KSAModding/content-manager-design/blob/main/rfcs/0031-content-metadata-format.md) and extended by [RFC 0035](https://github.com/KSAModding/content-manager-design/blob/main/rfcs/0035-content-install-descriptor.md), [RFC 0049](https://github.com/KSAModding/content-manager-design/blob/main/rfcs/0049-instance-handover.md), [RFC 0058](https://github.com/KSAModding/content-manager-design/blob/main/rfcs/0058-listing-images-and-dates.md) and [RFC 0067](https://github.com/KSAModding/content-manager-design/blob/main/rfcs/0067-per-platform-launch.md), and amended by [RFC 0065](https://github.com/KSAModding/content-manager-design/blob/main/rfcs/0065-icon-center-crop.md), [RFC 0072](https://github.com/KSAModding/content-manager-design/blob/main/rfcs/0072-version-forms.md) and [RFC 0079](https://github.com/KSAModding/content-manager-design/blob/main/rfcs/0079-author-freedom.md).
 
-It is JSON Schema 2020-12, and it covers all three types the format defines today: `mod`, `mod-loader` and `modpack`.
+It is JSON Schema 2020-12, and it covers the five types the format defines today: `mod`, `mod-loader`, `modpack`, and `vehicle` and `save` from [RFC 0085](https://github.com/KSAModding/content-manager-design/blob/main/rfcs/0085-vehicles-and-saves.md).
 
 `index-status.schema.json` covers `index-status.toml`, the index's own voice about a listing, per [RFC 0033](https://github.com/KSAModding/content-manager-design/blob/main/rfcs/0033-content-index.md).
 A state the snapshot builder cannot place fails the build, so a delisting written with a typo never reaches a client.
@@ -20,7 +20,7 @@ python3 tools/test_check_schema.py
 
 Every script resolves its paths from its own location, so the working directory does not matter.
 
-`check_schema.py` validates every document under `listings/` and `packs/`, at the depth the layout puts them at.
+`check_schema.py` validates every document under `listings/`, `vehicles/`, `saves/` and `packs/`, at the depth the layout puts them at.
 `test_check_schema.py` validates the schema itself, from both sides: real listings have to pass, and every rule has a case that has to fail for the stated reason.
 
 The other checks around it have their own tests, run together:
@@ -74,11 +74,55 @@ The platform names are `windows`, `linux` and `macos`.
 Each entry needs `launch`, a path relative to the loader's install location, and can add `runtime = "dotnet"`, which starts `dotnet` with `launch` as its first argument.
 A platform without an entry starts `[provides].launch`, so the table is valid only next to it.
 
+## Version bounds
+
+A `min` or `max` on `[loader]`, on a dependency entry, or on an `any_of` alternative is a version with one, two or three numbers, per RFC 0072.
+A missing number reads as `0`, so `0.5` is `0.5.0` and `1` is `1.0.0`.
+The SemVer 2.0.0 pre-release and build parts are allowed, as in `1.2-rc.1`.
+Four numbers, a leading zero, and a leading `v` are refused.
+
+The pack `version` and the `version` of a pin keep all three numbers, because they name a release as the index stores it.
+
+## Older releases
+
+`[releases]` can carry `since`, a version in the same forms as a bound, per [RFC 0079](https://github.com/KSAModding/content-manager-design/blob/main/rfcs/0079-author-freedom.md):
+
+```toml
+[releases]
+github = "owner/repository"
+since = "1.2"
+```
+
+The watcher in content-index-releases then also stamps every release of the authority host whose version is at least `since` and that has no release file yet.
+Without `since`, it stamps the newest release of a new listing and every release after it.
+`since` names no host, so it does not count toward the hosts that make `authority` required, `[releases]` with only `since` is refused, and `tools/ownership.py` reads the authority without it.
+A change of `since` alone is not a change of release host.
+
+An older release is stamped with the listing facts that stand when it is stamped, so a bound written for the newest release lands on it too.
+The owner corrects the facts of an old release with an amendment in content-index-releases, which may make the release stricter or wider.
+A lower `since` stamps more releases, and a higher one removes none.
+
+## Releases that are not mod releases
+
+`[releases]` can carry `tag_prefix`, per [RFC 0096](https://github.com/KSAModding/content-manager-design/blob/main/rfcs/0096-tag-prefix.md):
+
+```toml
+[releases]
+github = "owner/repository"
+tag_prefix = "mymod-"
+```
+
+The watcher then takes only the GitHub releases whose tag starts with `tag_prefix`, compared case-sensitively, and reads the version from the rest of the tag, so one leading `v` is allowed there.
+It filters `github` as the authority and as a mirror, and SpaceDock ignores it.
+The schema takes a non-empty ASCII string without whitespace and requires `github` next to it.
+`tag_prefix` names no host, so `tools/ownership.py` reads the authority without it, and a change of `tag_prefix` alone is not a change of release host.
+The release check of a listing refuses a `tag_prefix` that no release of a repository with releases starts with.
+
 ## What the schema does not cover
 
 Some rules cannot be expressed in JSON Schema at all. `check_schema.py` applies these after the schema passes:
 
-- a `max` below its `min`, on `[loader]`, on a dependency entry, and on an `any_of` alternative,
+- a `max` below its `min`, on `[loader]`, on a dependency entry, and on an `any_of` alternative, compared after a short bound is filled with `0`,
 - a `game_max` older than its `game_min`, where both name a revision or both name a month. RFC 0017 makes a month bound the first and last revision of that calendar month, and revisions ascend across the shipped history, so calendar order is revision order. A month against a revision stays uncomparable here: resolving it needs the game release list, which lives in the generated repository,
 - a `released_at` that matches the shape but names no real moment, such as `2026-13-45T12:00:00Z`,
 - unbalanced parentheses in a `license` expression,
@@ -89,23 +133,128 @@ Some rules need more than the document, and belong to the checks around it:
 
 | Rule | Where it belongs |
 |---|---|
-| Every SPDX identifier exists in the SPDX list | `tools/check_license.py`. The list is versioned data and must not be frozen into a schema, so it arrives as a pinned dependency instead. |
+| Every SPDX identifier exists in the SPDX list | `tools/check_license.py`. The list is versioned data and must not be frozen into a schema, so it arrives as a pinned dependency instead. The dependency also reads a few short names of its own, such as `GPL`, which are not SPDX identifiers, and the check refuses them. An identifier that is not on the list gets the identifiers that start like it named in the message, exception identifiers after WITH and license identifiers in every other place. |
+| Two identifiers in a `license` expression have an operator between them | `tools/check_license.py`, which names the missing `AND` or `OR`. The schema pattern refuses the shape as well. |
 | The id does not collide with another listing, case-insensitively | `tools/check_index.py` |
 | A changed document names a forums thread that no other listing or pack names, compared by thread id | `tools/check_index.py` warns only. The id comes from the `links.forums` pattern, so every URL form of one thread compares equal. |
 | A changed document has an `abstract` of at most 280 characters | `tools/check_index.py` warns only. RFC 0031 calls the abstract one or two sentences, and a longer one breaks list views. |
+| A changed document has a `game_max` that is not the newest build of the game release list | `tools/check_index.py` warns only, against `game-versions.json` of the generated repository, and the listing page gives the same note against the snapshot. A client blocks the content above `game_max` ([RFC 0091](https://github.com/KSAModding/content-manager-design/pull/91)), and a bound at the newest build usually means "tested with". A month is not compared. The vectors of this rule carry the release list as `game_versions`. |
 | The document sits at the path its id and type say | `tools/check_layout.py` |
 | `[loader].id` references content of type `mod-loader`, a dependency id references a `mod`, and a pack member is not itself a pack | `tools/check_index.py` |
+| Each pin of a changed pack version names a listing that is not delisted, at a stamped release that is not yanked: a `mod` under `[[mods]]`, a `vehicle` under `[[vehicles]]` and a `save` under `[[saves]]`. The mods that a pinned release requires are pinned under `[[mods]]` | `tools/check_index.py`, against the release files of the generated repository, per [RFC 0080](https://github.com/KSAModding/content-manager-design/blob/main/rfcs/0080-pack-claims-and-members.md) and [RFC 0085](https://github.com/KSAModding/content-manager-design/blob/main/rfcs/0085-vehicles-and-saves.md) |
+| The pins of a changed pack version are a complete set: every `required` dependency of a pinned release names another pinned mod inside its bounds, one member of an `any_of` is enough, and no `conflict` entry matches another pinned mod | `tools/check_index.py`, from the dependencies in the stamped release files, so a derived entry counts like an authored one |
+| A pin of a changed pack version names a `disputed` mod | `tools/check_index.py` warns only, because RFC 0080 lets a disputed member pass and a client warns about it |
 | A named `any_of` member carried `Optional = true` in the archive's own `mod.toml` | the stamper ([content-index-releases#13](https://github.com/KSAModding/content-index-releases/issues/13)), which is the only place the archive is read |
 | `[provides].launch` and the `launch` of each `[provides.platform]` entry name a file the release actually contains | the stamper |
 | `install.root` is derivable, and the archive downloads and hashes | `tools/check_release.py`, which reaches the answer by running the stamper against the real archive rather than by repeating its rules |
+| For a `vehicle` or a `save`, the archive holds a game folder by RFC 0085: `meta.toml` parses, its `name` passes the name rule and names the folder, the game file is well-formed XML, `version` is a game version when no `game_min` is authored, and no other listing of the type installs into the same folder | `tools/check_release.py`, through the stamper and its `check_folder` against the release files of the generated repository. Other files in a vehicle folder give a note. |
 | The change is narrow enough to merge itself | `tools/check_scope.py` |
-| A changed document has a curated tag, and each free-form tag is in the curated list | `tools/check_tags.py` warns only. `mod`, `mod-loader` and `modpack` share the `mod` list in `tags.toml`. |
+| A changed document has a curated tag, and each free-form tag is in the curated list | `tools/check_tags.py` warns only. `mod`, `mod-loader` and `modpack` share the `mod` list in `tags.toml`. The tags of a `vehicle` or a `save` are free-form by RFC 0085 and get no note. |
 | The shorter side of an icon is at most 1024 pixels and its longer side at most twice the shorter side, a description image `id` is used once, and each `ksa-image:` reference in the description names a record | `tools/check_images.py` |
 | A changed document has an icon that is not square | `tools/check_images.py` warns only, and names the center square that clients show. |
 | Each image of a changed document downloads safely and matches its record | `tools/check_images.py` with the document path, by the fetch rules of RFC 0058 |
 | An image record's `license` names identifiers on the SPDX list | `tools/check_license.py` |
 | An id in `index-status.toml` names a listing or a pack that exists, and a retracted version exists on that pack | `tools/check_status.py` |
-| The author controls the release host, or owns the pack id | the ownership workflow ([#4](https://github.com/KSAModding/content-index/issues/4)); pack ownership is read from the steward-owned `packs/<id>/owner.json` on the base branch |
+| The author controls the release host, or owns the pack id | the ownership workflow ([#4](https://github.com/KSAModding/content-index/issues/4)); pack ownership is read from `packs/<id>/owner.json` on the base branch by numeric account id, or from the pull request for a first claim, which adds the owner record together with the first version of an id that no listing or pack on the base branch holds in any case |
+
+## Pack member vectors
+
+`pack-vectors.json` holds small cases of the pack member rules of RFC 0080, with the result that `check_index.check_members` and `check_index.member_notes` give.
+`tools/test_check_index.py` writes each mini snapshot into a temporary index and release folder and runs the checks, and `site/test/pack-vectors.test.js` runs the same cases through the listing page.
+Borea is to hold a copy of the file and run it in its own tests ([Borea#567](https://github.com/KSAModding/Borea/issues/567)), so once that lands, a change here needs the same change there.
+
+The file is an object with one key, `vectors`, a list of cases.
+Each case has these keys:
+
+| Key | What it holds |
+|---|---|
+| `name` | What the case shows. Unique in the file. |
+| `snapshot` | The mini snapshot the case runs against, see below. |
+| `pack` | The text of the pack version document, in TOML. |
+| `accepted` | `true` when the member rules give no error. |
+| `errors` | Every error, in order, as `<section>[<n>]: <message>`. The checks put the path of the pack file in front, and a vector leaves it out. |
+| `notes` | Every warning, in the same form. A note does not refuse the pack. |
+| `adds` | Optional. The pins that "Add the missing dependencies" of the listing page appends, each as `id` and `version`, in order. Absent means none. With them appended, the pack has no error. |
+
+The mini snapshot has these keys:
+
+| Key | What it holds |
+|---|---|
+| `listings` | Each listing as `id`, `type` and `releases`. `releases` holds the stamped release files of the listing, with only the fields the rules read: `version`, `release_status`, and where the case needs them `yanked`, `dependencies` and `download`. A bound of a dependency is full SemVer, as the stamper writes it, so a runner can read the releases as release files without a stamping step. A case can also carry other fields of a release file, such as `yanked_reason` or the `source` of a dependency, which the rules do not read. |
+| `vehicles`, `saves` | Optional. The vehicles and saves of the case, each in the same shape as a listing. A runner writes them where the index keeps them, so `vehicles/<id>.toml` or `saves/<id>.toml`, with their release files under `releases/<id>/`. |
+| `delisted` | Optional. The ids that `index-status.toml` delists. In a real snapshot such a listing is a tombstone. |
+| `disputed` | Optional. The ids that `index-status.toml` marks disputed. In a real snapshot such a listing ships whole, with `index_status.state` set to `disputed`. |
+
+## Vehicles and saves
+
+A `vehicle` lives at `vehicles/<id>.toml` and a `save` at `saves/<id>.toml`, per [RFC 0085](https://github.com/KSAModding/content-manager-design/blob/main/rfcs/0085-vehicles-and-saves.md), and their ids are in the one global namespace of RFC 0031.
+The document has the shared core of a mod, with these differences:
+
+- `[links]` and `links.forums` are optional, because vehicles and saves carry no code and the forum may have no place for them. A mod, a loader and a pack keep both required ([RFC 0079](https://github.com/KSAModding/content-manager-design/blob/main/rfcs/0079-author-freedom.md)), and so does a document without `type`.
+- `[compatibility]` and `game_min` are optional, because the watcher takes `game_min` from `version` in the `meta.toml` of the archive when none is authored.
+- `[loader]`, `[provides]`, and the pack keys `version`, `released_at`, `changelog`, `[[mods]]`, `[[vehicles]]` and `[[saves]]` are refused.
+- `[install]` takes only `root`, `steps` and `uninstall`. The game decides the place, and `name` in the `meta.toml` of the archive names the folder, which the stamper writes into the release file as `install.folder`, so the document cannot author one.
+- `[releases]`, `[[dependencies]]` with every kind and `any_of`, `[images]`, `tags`, `status` and `superseded_by` are as for a mod. A dependency `id` that is listed must be a `mod`.
+
+The checks of the archive, such as the name rule below, the root folder and the game file, are the stamper's, and `tools/check_release.py` runs them.
+
+RFC 0085 let the index accept each type only once a release host and the tools supported it, so the schema refused both behind a rollout gate until [#210](https://github.com/KSAModding/content-index/issues/210) lifted it, first for `vehicle` and then for `save`.
+
+## Share hosts
+
+`hosts.schema.json` covers `hosts.toml`, the share hosts of [RFC 0094](https://github.com/KSAModding/content-manager-design/blob/main/rfcs/0094-share-host.md), one table per host, which stewards edit.
+The table name is the key a listing names the host with under `[releases]`: 2 to 32 lowercase ASCII letters, digits or `-`, starting with a letter, and not `github`, `spacedock`, `authority` or `since`.
+That is `HOST_KEY` of `tools/authored.py` in content-index-releases, which the watcher, the download counts and the snapshot read, so a change of the form is a change there too.
+A `storage` repository of the KSAModding organization is refused, because the index never hosts files.
+
+A host names `storage`, with an optional `pages`, or it keeps its archives outside GitHub by [RFC 0104](https://github.com/KSAModding/content-manager-design/blob/main/rfcs/0104-share-host-conformance.md) and names `data`, `downloads` and `key`, with an optional `retired_keys`, and never keys of both forms.
+`data` and every prefix in `downloads` are https URLs that end with `/`.
+`key` is the Ed25519 public key that signs the data files, as padded standard base64 of its 44-byte SubjectPublicKeyInfo, so it starts with `MCowBQYDK2VwAyEA`.
+`retired_keys` holds the earlier values of `key` in the same form, and they only check signatures that an ownership record on a pull request already holds (rule 30 of [spec/share-host.md](https://github.com/KSAModding/content-manager-design/blob/main/spec/share-host.md)).
+A data file that is read now must carry a signature by `key`.
+
+`tools/check_hosts.py` runs the schema and adds the rules it cannot express: every type in `types` has a size in `max_bytes`, `pages` is the GitHub Pages address of `storage`, `retired_keys` does not list the current `key`, and no key is a point of small order, because under such a key one signature fits every file.
+It reads a key only as text and checks no signature.
+
+`authored.schema.json` cannot read `hosts.toml`, so under `[releases]` it takes any key of the host key form with a listing id as its value, and `authority` takes such a key too.
+`tools/check_hosts.py` then refuses, for the documents a pull request changes, a key that `hosts.toml` does not register, a host whose `types` does not hold the type of the document, a value that is not the id of the document, a share host next to another host without `authority`, and an `authority` that names no host of the section.
+The listing page runs the same rules, with the same words, against the `hosts.toml` it was deployed with.
+These rules are not in `vectors.json`, because its runners have no `hosts.toml`.
+
+### Attestation vectors
+
+A share host proves the owner of a change it opens from its bot account with an attestation, `attestations/<sha256>.json` in its `storage`, named by the SHA-256 of the canonical form of the change (RFC 0094).
+The canonical form is UTF-8 text with one line per path the pull request touches, `<path> <blob>` with the lowercase git blob id of the file at the head, or `<path> deleted`.
+A rename is a `deleted` line for the old path and a line for the new path.
+The lines are sorted by the UTF-8 bytes of the path, not by UTF-16 code units or by a culture, and each line ends with one LF, the last one too.
+
+`attestation-vectors.json` is an object with one key, `vectors`, a list of cases with the keys `name` (unique in the file), `files` (the change as the pull request files API gives it, with `filename`, `status`, `sha` and `previous_filename`), `canonical` (the canonical form) and `sha256` (its lowercase hex SHA-256).
+Every character outside ASCII is a JSON `\u` escape, so the file stays ASCII.
+`tools/test_attestation_vectors.py` runs it against `ownership.canonical_change` and `ownership.change_digest`, and every share host runs it against its own copy of the form.
+
+## Save and vehicle names
+
+The game takes the identity of a vehicle or a save from `name` in the `meta.toml` of its folder (`UncompressedVehicleSave.FromDirectory`, `UncompressedSave.FromDirectory`), and it keeps a name only when `SaveName.Sanitize` gives it back unchanged (`SaveName.IsSanitized`).
+[RFC 0085](https://github.com/KSAModding/content-manager-design/blob/main/rfcs/0085-vehicles-and-saves.md) writes that rule out:
+
+- 1 to 64 UTF-16 code units.
+- Each code unit is in the Unicode categories Lu, Ll, Lt, Lm, Lo or Nd (`char.IsLetterOrDigit`), or is a space, `-` or `_`. So a letter outside the Basic Multilingual Plane fails.
+- No space at the start or the end, and no two spaces together.
+- Not `CON`, `PRN`, `AUX`, `NUL`, `COM1` to `COM9` or `LPT1` to `LPT9`, compared without case.
+
+`save-names.json` holds the cases a checker gets wrong most easily, such as U+00B2, which Python's `str.isalnum` accepts and `char.IsLetterOrDigit` does not, and a name whose length in characters and in UTF-16 code units differs.
+The file is an object with one key, `vectors`, a list of cases with the keys `name` (what the case shows, unique in the file), `value` (the name), `accepted` (`true` when the game keeps the name as it is) and `why`.
+Every character outside ASCII is a JSON `\u` escape, so the file stays ASCII.
+A case uses only characters that Unicode 15.0 or older assigns, so Python, .NET and a browser agree on their category; `tools/test_save_name_vectors.py` fails on a runner whose table is older or does not know a character.
+
+Every copy of the rule runs this file:
+
+- the Python copy is `stamp_release.valid_save_name` of content-index-releases ([content-index-releases#102](https://github.com/KSAModding/content-index-releases/issues/102)), which the checks here load through `check_release.load_stamper`, so this repository keeps no copy of its own,
+- the listing page has `site/js/savename.js`, which `site/test/save-names.test.js` runs,
+- Borea has `GameSaveName` ([Borea#790](https://github.com/KSAModding/Borea/issues/790)),
+- a share host ([RFC 0094](https://github.com/KSAModding/content-manager-design/blob/main/rfcs/0094-share-host.md)) checks the name of an upload with it too.
+
+A change here needs the same change in each copy.
 
 ## Where the schema is stricter than the RFC text
 
@@ -118,15 +267,15 @@ They are collected here so any one of them can be argued down on its own.
 | `links.forums` must be an `https` link to a thread on `forums.ahwoo.com` | The field exists to tie a listing to an Ahwoo account, to be the tiebreaker in an id dispute, and to be the takedown tripwire. A link anywhere else satisfies the letter and defeats all three, and so do the forum root and a category page, which are on the host and name no content. RFC 0031's field table already calls the field the forums thread, so what the schema adds is a machine rule for that description and the one domain the RFC's examples use. Every form the forum serves a thread under passes, which is `/threads/<slug>.<id>/`, the same thread under its node path, and the `index.php` form. |
 | A link value must be an `http` or `https` URL | RFC 0031 says "plain links, shown as such". A client renders these, so a value that is not a URL is not a link. |
 | `superseded_by` requires `status = "deprecated"` | RFC 0031 calls it "only meaningful together with" a deprecation. Alone it is a successor no client will ever show, which is more likely a forgotten `status` line than an intention. |
-| A `mod` may not set `install.path`, and may only set `install.target = "mods"` | RFC 0035: "a mod's install location is not the author's to choose in the first place", because the folder name is the identity `Mod.MakeUsing` assigns. |
+| A `mod` may not set `install.target` or `install.path` | RFC 0035: "a mod's install location is not the author's to choose in the first place", because the folder name is the identity `Mod.MakeUsing` assigns, and "stating it as a default rather than an authorable field keeps it that way". The stamper refuses both keys on a mod, so the schema refuses even `target = "mods"`, which only repeats the default. |
 | A `modpack` may not carry `[releases]`, `[loader]` or `[[dependencies]]` | RFC 0031 lists these under what a pack does not have, and RFC 0035 already makes `[install]` on a pack invalid. A section that does nothing is a section its author believed in. |
 | A `mod-loader` carrying `[install]` must state `target` | RFC 0035's Relationship section claims every RFC 0031 file stays valid, but its own table requires `target` on a type with no default, and `mod-loader` has none. The normative table wins. |
-| Authored SemVer bounds reject a leading `v` | Only a release tag gets its `v` stripped, and that happens at stamp time. An authored bound is not a tag. |
+| Authored version bounds reject a leading `v` | Only a release tag gets its `v` stripped, and that happens at stamp time. An authored bound is not a tag. |
 | Game bounds reject a suffix or a `+hash`, take a four-digit year, and take a month of 1 to 12 | RFC 0017 puts builds carrying a suffix outside the compatibility model, and a bound has to resolve to a revision. |
 | An `any_of` entry may not carry `min` or `max` of its own | RFC 0031 puts the bounds on each alternative. An outer pair would have no defined meaning against a set. |
 | A path may not run through a reserved Windows device name | Not in any RFC. A segment naming `NUL` or `CON` swallows every write on Windows, so a manager writing `[provides.configure]` there reports success and configures nothing, which is the failure that section exists to prevent. |
 | A `[provides.instance]` key may not carry a Unicode control character, U+0000 to U+001F or U+007F to U+009F | RFC 0049 forbids only whitespace. A manager hands the value to a process start as an argument or a variable name, where a control character that is not whitespace, such as a NUL, cuts the value short or makes the start fail. The paths and keys elsewhere in the schema exclude the control characters below U+0020 for the same reason. |
-| `[releases]` must name at least one host | A section carrying only `authority` names an authority for nothing. Implied by RFC 0031 rather than stated. |
+| `[releases]` must name at least one host | A section carrying only `authority` or `since` names an authority or a first release for nothing. Implied by RFC 0031 rather than stated. |
 | `tags` are lowercase, and a word or words joined by `-` | RFC 0031 says "free-form lowercase tags". The casing is the RFC's; the separator is this schema's, so a filter list cannot end up holding both `user-interface` and `user_interface`. |
 | `[[mods]]` and `authors` need at least one entry, and `name`, `abstract` and `changelog` may not be empty | A required field present but empty is the same absence with none of the reporting. |
 

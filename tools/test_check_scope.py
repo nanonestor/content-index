@@ -82,6 +82,27 @@ class Kinds(unittest.TestCase):
     def test_a_change_without_a_document_reports_nothing(self):
         self.assertEqual(self.kinds("tools/decide.py", "README.md"), [])
 
+    def test_a_vehicle_and_a_save_name_their_kinds(self):
+        self.assertEqual(check_scope.kind_of("vehicles/ExampleRover.toml"), check_scope.VEHICLE_KIND)
+        self.assertEqual(check_scope.kind_of("saves/ExampleBase.TOML"), check_scope.SAVE_KIND)
+
+    def test_only_a_toml_file_directly_in_the_folder_is_a_vehicle_or_a_save(self):
+        for path in (
+            "vehicles/nested/ExampleRover.toml",
+            "saves/ExampleBase.json",
+            "vehicles/README.md",
+            "Vehicles/ExampleRover.toml",
+            "saves/ExampleBase.toml\nx",
+        ):
+            with self.subTest(path=path):
+                self.assertIsNone(check_scope.kind_of(path))
+
+    def test_every_kind_comes_in_the_order_KINDS_names(self):
+        self.assertEqual(
+            self.kinds("saves/B.toml", "vehicles/R.toml", "packs/Pack/1.0.0.toml", "listings/Mod.toml"),
+            ["listing", "pack", "vehicle", "save"],
+        )
+
 
 class Evaluate(unittest.TestCase):
     def evaluate(self, paths, status="added"):
@@ -102,13 +123,57 @@ class Evaluate(unittest.TestCase):
         candidate, _, _ = self.evaluate(["listings/Mod.toml"], status="modified")
         self.assertTrue(candidate)
 
-    def test_two_documents_wait_for_a_steward(self):
+    def test_several_listings_merge_themselves(self):
+        # An author who lists their mods at once opens one pull request for them.
         candidate, documents, reason = self.evaluate(
-            ["listings/A.toml", "listings/B.toml"]
+            ["listings/A.toml", "listings/B.toml", "listings/C.toml"]
         )
+        self.assertTrue(candidate)
+        self.assertEqual(documents, ["listings/A.toml", "listings/B.toml", "listings/C.toml"])
+        self.assertEqual(reason, "")
+
+    def test_a_listing_and_a_pack_version_together_merge_themselves(self):
+        candidate, _, reason = self.evaluate(["listings/Mod.toml", "packs/Pack/1.0.0.toml"])
+        self.assertTrue(candidate)
+        self.assertEqual(reason, "")
+
+    def test_more_documents_than_the_limit_wait_for_a_steward(self):
+        paths = [f"listings/Mod{index}.toml" for index in range(check_scope.MAX_DOCUMENTS + 1)]
+        candidate, documents, reason = self.evaluate(paths)
+        self.assertFalse(candidate)
+        self.assertEqual(len(documents), check_scope.MAX_DOCUMENTS + 1)
+        self.assertIn(f"{check_scope.MAX_DOCUMENTS + 1} documents", reason)
+        self.assertIn(str(check_scope.MAX_DOCUMENTS), reason)
+
+    def test_a_vehicle_and_a_save_merge_themselves(self):
+        paths = ["vehicles/ExampleRover.toml", "saves/ExampleBase.toml"]
+        candidate, documents, reason = self.evaluate(paths)
+        self.assertTrue(candidate)
+        self.assertEqual(documents, paths)
+        self.assertEqual(reason, "")
+
+    def test_vehicles_and_saves_count_toward_the_limit(self):
+        paths = [f"listings/Mod{index}.toml" for index in range(check_scope.MAX_DOCUMENTS - 1)]
+        paths += ["vehicles/ExampleRover.toml", "saves/ExampleBase.toml"]
+        candidate, documents, reason = self.evaluate(paths)
+        self.assertFalse(candidate)
+        self.assertEqual(len(documents), check_scope.MAX_DOCUMENTS + 1)
+        self.assertIn(f"{check_scope.MAX_DOCUMENTS + 1} documents", reason)
+
+    def test_the_limit_itself_still_merges_itself(self):
+        paths = [f"listings/Mod{index}.toml" for index in range(check_scope.MAX_DOCUMENTS)]
+        candidate, _, _ = self.evaluate(paths)
+        self.assertTrue(candidate)
+
+    def test_a_removed_document_beside_written_ones_waits(self):
+        changes = check_scope.changes(["listings/A.toml"]) + [
+            check_scope.Change("listings/B.toml", "removed")
+        ]
+        candidate, documents, reason = check_scope.evaluate(changes)
         self.assertFalse(candidate)
         self.assertEqual(len(documents), 2)
-        self.assertIn("2 documents", reason)
+        self.assertIn("listings/B.toml", reason)
+        self.assertIn("tombstone", reason)
 
     def test_a_document_next_to_anything_else_waits(self):
         candidate, documents, reason = self.evaluate(
@@ -138,6 +203,46 @@ class Evaluate(unittest.TestCase):
     def test_the_index_status_file_is_not_a_document(self):
         candidate, _, _ = self.evaluate(["index-status.toml"])
         self.assertFalse(candidate)
+
+
+class PackClaims(unittest.TestCase):
+    def evaluate(self, *changes):
+        return check_scope.evaluate([check_scope.Change(path, status) for path, status in changes])
+
+    def test_a_first_claim_merges_itself(self):
+        candidate, documents, reason = self.evaluate(
+            ("packs/Pack/1.0.0.toml", "added"), ("packs/Pack/owner.json", "added")
+        )
+        self.assertTrue(candidate)
+        self.assertEqual(documents, ["packs/Pack/1.0.0.toml"])
+        self.assertEqual(reason, "")
+
+    def test_an_owner_record_alone_waits(self):
+        candidate, _, reason = self.evaluate(("packs/Pack/owner.json", "added"))
+        self.assertFalse(candidate)
+        self.assertIn("no listing or pack document", reason)
+
+    def test_an_owner_record_beside_another_pack_waits(self):
+        candidate, _, reason = self.evaluate(
+            ("packs/Other/1.0.0.toml", "added"), ("packs/Pack/owner.json", "added")
+        )
+        self.assertFalse(candidate)
+        self.assertIn("packs/Pack/owner.json", reason)
+
+    def test_an_owner_record_beside_a_listing_waits(self):
+        candidate, _, _ = self.evaluate(
+            ("listings/Pack.toml", "added"), ("packs/Pack/owner.json", "added")
+        )
+        self.assertFalse(candidate)
+
+    def test_a_changed_owner_record_waits_even_with_a_new_version(self):
+        for status in ("modified", "removed", "renamed"):
+            with self.subTest(status=status):
+                candidate, _, reason = self.evaluate(
+                    ("packs/Pack/2.0.0.toml", "added"), ("packs/Pack/owner.json", status)
+                )
+                self.assertFalse(candidate)
+                self.assertIn("packs/Pack/owner.json", reason)
 
 
 class Removals(unittest.TestCase):
